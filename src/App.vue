@@ -1,14 +1,33 @@
-<script setup>
+<script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
 import { formatDate, parseLocalYMD } from './utils/dates';
-import { checkCollision, findClosestValidPosition } from './utils/physics';
+import { checkCollision, findClosestValidPosition, type PhysicsItem } from './utils/physics';
 import { generateColorPalette } from './utils/colors'; 
 import TaskListModal from './components/TaskListModal.vue';
+
+// --- Interfaces ---
+interface TaskItem extends PhysicsItem {
+    name: string;
+    color?: string;
+    [key: string]: any;
+}
+
+interface GridConfig {
+    cols: number;
+    rows: number;
+}
+
+interface AxisConfig {
+    mode: 'number' | 'day' | 'week' | string;
+    startDate: string;
+    weekdaysOnly?: boolean;
+    [key: string]: any;
+}
 
 // --- Configuration ---
 const CELL_SIZE = 50; // Fixed cell size
 
-const gridConfig = reactive({
+const gridConfig = reactive<GridConfig>({
     cols: 20,
     rows: 5
 });
@@ -18,14 +37,14 @@ const gridWidth = computed(() => gridConfig.cols * CELL_SIZE);
 const gridHeight = computed(() => gridConfig.rows * CELL_SIZE);
 
 // --- Axis Settings ---
-const axisConfig = reactive({
+const axisConfig = reactive<AxisConfig>({
     mode: 'number', // number, day, week
     startDate: new Date().toISOString().substring(0, 10), // string YYYY-MM-DD
     weekdaysOnly: false
 });
 
 const axisLabels = computed(() => {
-    const labels = [];
+    const labels: (string | number)[] = [];
     let currentDate = parseLocalYMD(axisConfig.startDate);
     
     if (axisConfig.mode === 'week') {
@@ -99,10 +118,10 @@ const isDragging = ref(false);
 const startX = ref(0);
 const startY = ref(0);
 
-const draggingItemIndex = ref(null);
-const selectedItemId = ref(1);
+const draggingItemIndex = ref<number | null>(null);
+const selectedItemId = ref<number | string | null>(1);
 
-const items = reactive([
+const items = reactive<TaskItem[]>([
     {
         id: 1,
         x: 0,
@@ -155,7 +174,7 @@ const ghost = reactive({
 });
 
 // --- History / Undo ---
-const history = ref([]);
+const history = ref<TaskItem[][]>([]);
 
 const saveHistory = () => {
     history.value.push(JSON.parse(JSON.stringify(items)));
@@ -165,13 +184,15 @@ const saveHistory = () => {
 const undo = () => {
     if (history.value.length === 0) return;
     const previousState = history.value.pop();
-    items.splice(0, items.length, ...previousState);
-    selectedItemId.value = null;
+    if (previousState) {
+        items.splice(0, items.length, ...previousState);
+        selectedItemId.value = null;
+    }
 };
 
 // --- Methods ---
 
-const getItemStyle = (item, index) => {
+const getItemStyle = (item: TaskItem, index: number) => {
     const isBeingDragged = draggingItemIndex.value === index;
     
     let x = item.x;
@@ -193,7 +214,7 @@ const getItemStyle = (item, index) => {
 
 const addItem = () => {
     saveHistory();
-    const newId = items.length > 0 ? Math.max(...items.map(i => i.id)) + 1 : 1;
+    const newId = items.length > 0 ? Math.max(...items.map(i => Number(i.id))) + 1 : 1;
     
     let newX = 0;
     let newY = 0;
@@ -216,7 +237,7 @@ const addItem = () => {
         if (found) break;
     }
 
-    const newItem = {
+    const newItem: TaskItem = {
         id: newId,
         x: newX,
         y: newY,
@@ -229,9 +250,7 @@ const addItem = () => {
     selectedItemId.value = newId;
 };
 
-// Removed local checkCollision definition
-
-const startDrag = (event, index) => {
+const startDrag = (event: MouseEvent, index: number) => {
     if (draggingItemIndex.value !== null) return; 
 
     draggingItemIndex.value = index;
@@ -247,7 +266,7 @@ const startDrag = (event, index) => {
     window.addEventListener('mouseup', stopDrag);
 };
 
-const onDrag = (event) => {
+const onDrag = (event: MouseEvent) => {
     if (!isDragging.value) return;
 
     const dx = event.clientX - startX.value;
@@ -307,25 +326,25 @@ const updateGhost = () => {
 
     ghost.width = itemPxWidth;
     ghost.height = CELL_SIZE;
-    ghost.color = item.color;
+    ghost.color = item.color || '#ccc';
     ghost.visible = true;
 };
-
-// Removed local findClosestValidPosition definition
 
 const stopDrag = () => {
     if (!isDragging.value) return;
     
     const index = draggingItemIndex.value;
-    const item = items[index];
+    if (index !== null) {
+        const item = items[index];
 
-    if (ghost.visible) {
-        if (item.x !== ghost.x || item.y !== ghost.y) {
-            saveHistory();
+        if (ghost.visible) {
+            if (item.x !== ghost.x || item.y !== ghost.y) {
+                saveHistory();
+            }
+
+            item.x = ghost.x;
+            item.y = ghost.y;
         }
-
-        item.x = ghost.x;
-        item.y = ghost.y;
     }
 
     isDragging.value = false;
@@ -338,7 +357,7 @@ const stopDrag = () => {
 };
 
 // --- Persistence (Save/Load) ---
-const fileInput = ref(null);
+const fileInput = ref<HTMLInputElement | null>(null);
 
 const saveProject = () => {
     const data = {
@@ -354,7 +373,7 @@ const saveProject = () => {
     const url = URL.createObjectURL(blob);
     
     const now = new Date();
-    const pad = (n) => String(n).padStart(2, '0');
+    const pad = (n: number) => String(n).padStart(2, '0');
     const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}-${pad(now.getMinutes())}`;
 
     const a = document.createElement('a');
@@ -372,31 +391,34 @@ const triggerLoad = () => {
     }
 };
 
-const handleFileUpload = (event) => {
-    const file = event.target.files[0];
+const handleFileUpload = (event: Event) => {
+    const target = event.target as HTMLInputElement;
+    const file = target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
     reader.onload = (e) => {
         try {
-            const data = JSON.parse(e.target.result);
-            
-            if (data.items && Array.isArray(data.items)) {
-                items.length = 0; 
-                items.push(...data.items);
-            }
-            
-            if (data.gridConfig) {
-                gridConfig.cols = data.gridConfig.cols;
-                gridConfig.rows = data.gridConfig.rows;
-            }
+            if (e.target?.result) {
+                const data = JSON.parse(e.target.result as string);
+                
+                if (data.items && Array.isArray(data.items)) {
+                    items.length = 0; 
+                    items.push(...data.items);
+                }
+                
+                if (data.gridConfig) {
+                    gridConfig.cols = data.gridConfig.cols;
+                    gridConfig.rows = data.gridConfig.rows;
+                }
 
-            if (data.axisConfig) {
-                Object.assign(axisConfig, data.axisConfig);
+                if (data.axisConfig) {
+                    Object.assign(axisConfig, data.axisConfig);
+                }
+                
+                selectedItemId.value = null;
+                saveHistory(); 
             }
-            
-            selectedItemId.value = null;
-            saveHistory(); 
 
         } catch (err) {
             console.error("Failed to load project:", err);
@@ -404,11 +426,11 @@ const handleFileUpload = (event) => {
         }
     };
     reader.readAsText(file);
-    event.target.value = ''; 
+    target.value = ''; 
 };
 
 // --- Lifecycle ---
-const handleKeydown = (e) => {
+const handleKeydown = (e: KeyboardEvent) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
         e.preventDefault();
         undo();
@@ -460,11 +482,11 @@ onUnmounted(() => {
                     Load
                 </button>
                 <!-- Hidden file input for loading -->
-                <input 
-                    ref="fileInput" 
-                    type="file" 
-                    style="display: none" 
-                    accept=".json" 
+                <input
+                    ref="fileInput"
+                    type="file"
+                    style="display: none"
+                    accept=".json"
                     @change="handleFileUpload"
                 >
             </div>
@@ -483,20 +505,19 @@ onUnmounted(() => {
                 class="axis-header"
                 :style="{ width: gridWidth + 'px' }"
             >
-                <div 
-                    v-for="(label, index) in axisLabels" 
-                    :key="index" 
+                <div
+                    v-for="(label, index) in axisLabels"
+                    :key="index"
                     class="axis-cell"
-                    :title="label"
+                    :title="String(label)"
                 >
                     {{ label }}
                 </div>
             </div>
 
             <!-- Board -->
-            <div 
-                ref="board" 
-                class="board-container" 
+            <div
+                class="board-container"
                 :style="{ width: gridWidth + 'px', height: gridHeight + 'px' }"
                 @click.self="selectedItemId = null"
             >
@@ -521,7 +542,7 @@ onUnmounted(() => {
                 />
 
                 <!-- The Draggable Items -->
-                <div 
+                <div
                     v-for="(item, index) in items"
                     :key="item.id"
                     class="draggable-item"
@@ -617,7 +638,7 @@ onUnmounted(() => {
                             style="margin: 0; font-weight: normal;"
                         >Weekdays Only</label>
                     </div>
-                
+
                     <div
                         v-if="gridError"
                         class="error-msg"
@@ -658,7 +679,7 @@ onUnmounted(() => {
 
             <div v-if="selectedItem">
                 <h2>Edit Work Item</h2>
-            
+
                 <div class="form-group">
                     <label>Name</label>
                     <input
@@ -670,10 +691,10 @@ onUnmounted(() => {
 
                 <div class="form-group">
                     <label>Length (Grid Units)</label>
-                    <input 
-                        v-model.number="selectedItem.widthUnits" 
-                        type="number" 
-                        min="1" 
+                    <input
+                        v-model.number="selectedItem.widthUnits"
+                        type="number"
+                        min="1"
                         step="1"
                         @focus="saveHistory"
                     >
@@ -688,8 +709,8 @@ onUnmounted(() => {
                         class="color-palette"
                         @mousedown="saveHistory"
                     >
-                        <div 
-                            v-for="color in colorPalette" 
+                        <div
+                            v-for="color in colorPalette"
                             :key="color"
                             class="color-swatch"
                             :class="{ active: selectedItem.color === color }"

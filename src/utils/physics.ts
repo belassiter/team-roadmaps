@@ -1,13 +1,17 @@
-// src/utils/physics.js
+// src/utils/physics.ts
+
+export interface PhysicsItem {
+    id: string | number;
+    x: number;
+    y: number;
+    widthUnits: number;
+    [key: string]: any;
+}
 
 /**
  * Checks if a candidate item overlaps with any existing items.
- * @param {Object} candidate - { id, x, y, widthUnits }
- * @param {Array} existingItems - Array of items to check against
- * @param {Number} cellSize - Pixel size of one grid cell
- * @returns {Boolean} True if collision detected
  */
-export const checkCollision = (candidate, existingItems, cellSize) => {
+export const checkCollision = (candidate: PhysicsItem, existingItems: PhysicsItem[], cellSize: number): boolean => {
     const candLeft = candidate.x;
     const candRight = candidate.x + (candidate.widthUnits * cellSize);
     const candTop = candidate.y;
@@ -34,26 +38,17 @@ export const checkCollision = (candidate, existingItems, cellSize) => {
 
 /**
  * Finds the closest valid position for an item using a spiral/neighborhood search.
- * @param {Number} itemId - ID of the item being moved
- * @param {Array} allItems - All items on the board
- * @param {Number} targetX - Desired X position (px)
- * @param {Number} targetY - Desired Y position (px)
- * @param {Number} widthUnits - Width of the item in grid units
- * @param {Number} cellSize - Pixel size of grid cells
- * @param {Number} gridWidth - Total width of grid (px)
- * @param {Number} gridHeight - Total height of grid (px)
- * @returns {Object} { x, y } of the valid position found (or original/fallback)
  */
 export const findClosestValidPosition = (
-    itemId, 
-    allItems, 
-    targetX, 
-    targetY, 
-    widthUnits, 
-    cellSize, 
-    gridWidth, 
-    gridHeight
-) => {
+    itemId: string | number, 
+    allItems: PhysicsItem[], 
+    targetX: number, 
+    targetY: number, 
+    widthUnits: number, 
+    cellSize: number, 
+    gridWidth: number, 
+    gridHeight: number
+): { x: number; y: number } => {
     // Search radius in grid cells
     const maxRadius = 10; 
 
@@ -89,9 +84,6 @@ export const findClosestValidPosition = (
     }
     
     // If completely stuck, return original position (fallback)
-    // Note: The caller might need to handle the case where "original position" isn't passed in here.
-    // Ideally we return the targetX/Y if force is allowed, or null. 
-    // For now returning target to prevent breaking, but in App.vue we fallback to original item state.
     const originalItem = allItems.find(i => i.id === itemId);
     if (originalItem) {
         return { x: originalItem.x, y: originalItem.y };

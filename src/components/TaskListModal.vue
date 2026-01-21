@@ -1,44 +1,58 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed } from 'vue';
+import type { Directive } from 'vue';
 import { filterItems, sortItems } from '../utils/listHelpers';
 import { getGridIndexFromDate, getDateFromGridIndex } from '../utils/gridConverters';
 import { generateColorPalette } from '../utils/colors';
 
-const props = defineProps({
-    isOpen: Boolean,
-    items: {
-        type: Array,
-        default: () => []
-    },
-    axisConfig: {
-        type: Object,
-        default: () => ({})
-    },
-    cellSize: {
-        type: Number,
-        default: 50
-    }
+interface TaskItem {
+    id: number | string;
+    name: string;
+    x: number;
+    y: number;
+    widthUnits: number;
+    color?: string;
+    [key: string]: any;
+}
+
+interface AxisConfig {
+    mode: string;
+    startDate: string;
+    [key: string]: any;
+}
+
+const props = withDefaults(defineProps<{
+    isOpen: boolean;
+    items: TaskItem[];
+    axisConfig: AxisConfig;
+    cellSize?: number;
+}>(), {
+    cellSize: 50,
+    items: () => [],
+    axisConfig: () => ({ mode: 'number', startDate: '' })
 });
 
-const emit = defineEmits(['close']);
+const emit = defineEmits<{
+    (e: 'close'): void
+}>();
 
 const searchQuery = ref('');
-const sortKey = ref('name');
-const sortOrder = ref('asc');
+const sortKey = ref<string>('name');
+const sortOrder = ref<'asc' | 'desc'>('asc');
 
-const vFocus = {
+const vFocus: Directive = {
     mounted: (el) => el.focus()
 };
 
 const colorPalette = generateColorPalette();
 
 // --- Editing State ---
-const editingId = ref(null);
-const editingField = ref(null);
-const editValue = ref(null);
-const showColorPickerId = ref(null);
+const editingId = ref<number | string | null>(null);
+const editingField = ref<string | null>(null);
+const editValue = ref<any>(null);
+const showColorPickerId = ref<number | string | null>(null);
 
-const startEdit = (item, field) => {
+const startEdit = (item: TaskItem, field: string) => {
     editingId.value = item.id;
     editingField.value = field;
     showColorPickerId.value = null; // Close color picker if open
@@ -66,10 +80,10 @@ const startEdit = (item, field) => {
     }
 };
 
-const commitEdit = (item) => {
+const commitEdit = (item: TaskItem) => {
     if (editingField.value === 'name') {
-        if (editValue.value && editValue.value.trim()) {
-            item.name = editValue.value.trim();
+        if (editValue.value && String(editValue.value).trim()) {
+            item.name = String(editValue.value).trim();
         }
     } else if (editingField.value === 'y') {
         const val = parseInt(editValue.value);
@@ -103,7 +117,7 @@ const cancelEdit = () => {
     editValue.value = null;
 };
 
-const toggleColorPicker = (item) => {
+const toggleColorPicker = (item: TaskItem) => {
     if (showColorPickerId.value === item.id) {
         showColorPickerId.value = null;
     } else {
@@ -113,14 +127,14 @@ const toggleColorPicker = (item) => {
     }
 };
 
-const selectColor = (item, color) => {
+const selectColor = (item: TaskItem, color: string) => {
     item.color = color;
     showColorPickerId.value = null;
 };
 
 // --- Display Helpers ---
 
-const toggleSort = (key) => {
+const toggleSort = (key: string) => {
     if (sortKey.value === key) {
         sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc';
     } else {
@@ -129,7 +143,7 @@ const toggleSort = (key) => {
     }
 };
 
-const getDisplayStart = (item) => {
+const getDisplayStart = (item: TaskItem) => {
     // Return display value for "Start" column
     const gridIndex = Math.round(item.x / props.cellSize);
     
@@ -145,7 +159,9 @@ const getDisplayStart = (item) => {
 
 const processedItems = computed(() => {
     let result = filterItems(props.items, searchQuery.value);
-    return sortItems(result, sortKey.value, sortOrder.value);
+    // Cast key to keyof TaskItem to satisfy TS, though sortItems is generic
+    // result is TaskItem[]
+    return sortItems(result, sortKey.value as keyof TaskItem, sortOrder.value);
 });
 
 </script>
@@ -181,15 +197,15 @@ const processedItems = computed(() => {
                             <tr>
                                 <th @click="toggleSort('name')">
                                     Name 
-                                    <span v-if="sortKey === 'name'">{{ sortOrder === 'asc' ? '▲' : '▼' }}</span>
+                                    <span v-if="sortKey === 'name'">{{ sortOrder === 'asc' ? '' : '' }}</span>
                                 </th>
                                 <th @click="toggleSort('x')">
                                     Start
-                                    <span v-if="sortKey === 'x'">{{ sortOrder === 'asc' ? '▲' : '▼' }}</span>
+                                    <span v-if="sortKey === 'x'">{{ sortOrder === 'asc' ? '' : '' }}</span>
                                 </th>
                                 <th @click="toggleSort('y')">
                                     Row
-                                    <span v-if="sortKey === 'y'">{{ sortOrder === 'asc' ? '▲' : '▼' }}</span>
+                                    <span v-if="sortKey === 'y'">{{ sortOrder === 'asc' ? '' : '' }}</span>
                                 </th>
                                 <th>Color</th>
                             </tr>

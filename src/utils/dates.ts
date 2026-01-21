@@ -1,7 +1,7 @@
-// src/utils/dates.js
+// src/utils/dates.ts
 
 // Helper to format date
-export const formatDate = (date, mode) => {
+export const formatDate = (date: Date, mode: 'day' | 'week' | 'number' | string): string => {
     if (mode === 'day') {
         return date.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', weekday: 'short' });
     } else if (mode === 'week') {
@@ -12,7 +12,7 @@ export const formatDate = (date, mode) => {
 };
 
 // Helper to parse "YYYY-MM-DD" as local date to avoid UTC offsets
-export const parseLocalYMD = (str) => {
+export const parseLocalYMD = (str: string): Date => {
     if (!str) return new Date();
     const parts = str.split('-');
     // new Date(y, mIndex, d) handles local time

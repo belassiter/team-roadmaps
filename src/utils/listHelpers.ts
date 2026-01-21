@@ -1,6 +1,6 @@
-// src/utils/listHelpers.js
+// src/utils/listHelpers.ts
 
-export const filterItems = (items, searchTerm) => {
+export const filterItems = <T extends { name: string }>(items: T[], searchTerm: string): T[] => {
     if (!searchTerm) return items;
     const lowerTerm = searchTerm.toLowerCase();
     return items.filter(item => 
@@ -8,13 +8,13 @@ export const filterItems = (items, searchTerm) => {
     );
 };
 
-export const sortItems = (items, key, order) => {
+export const sortItems = <T>(items: T[], key: keyof T, order: 'asc' | 'desc'): T[] => {
     // Create a shallow copy to avoid mutating the original array
     const sorted = [...items];
     
     sorted.sort((a, b) => {
-        let valA = a[key];
-        let valB = b[key];
+        const valA = a[key];
+        const valB = b[key];
         
         if (valA < valB) return order === 'asc' ? -1 : 1;
         if (valA > valB) return order === 'asc' ? 1 : -1;
