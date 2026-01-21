@@ -310,17 +310,13 @@ header {
     z-index: 30; /* Always on top while dragging */
 }
 
-/* 
- * The Ghost Item (Target Preview)
- */
 .ghost-item {
     position: absolute;
-    box-sizing: border-box;
-    border-width: 2px;
-    border-style: dashed;
-    z-index: 5; /* Keep it below the dragged item (z30) but above grid */
-    pointer-events: none; /* Ignore mouse events */
-    opacity: 0.5; /* Make the whole ghost semi-transparent */
+    top: 0;
+    left: 0;
+    border: 2px dashed rgba(0,0,0,0.5);
     border-radius: 4px;
-    transition: all 0.1s ease-out; /* Smooth snapping */
+    opacity: 0.4;
+    z-index: 5; /* Below items, above grid */
+    pointer-events: none; /* Ignore clicks */
 }
