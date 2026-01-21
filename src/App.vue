@@ -2,6 +2,8 @@
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
 import { formatDate, parseLocalYMD } from './utils/dates';
 import { checkCollision, findClosestValidPosition } from './utils/physics';
+import { generateColorPalette } from './utils/colors'; 
+import TaskListModal from './components/TaskListModal.vue';
 
 // --- Configuration ---
 const CELL_SIZE = 50; // Fixed cell size
@@ -44,8 +46,8 @@ const axisLabels = computed(() => {
             labels.push(formatDate(new Date(currentDate), 'day'));
             currentDate.setDate(currentDate.getDate() + 1);
         } else if (axisConfig.mode === 'week') {
-                labels.push(formatDate(new Date(currentDate), 'week'));
-                currentDate.setDate(currentDate.getDate() + 7);
+            labels.push(formatDate(new Date(currentDate), 'week'));
+            currentDate.setDate(currentDate.getDate() + 7);
         }
     }
     return labels;
@@ -57,10 +59,10 @@ const pendingGrid = reactive({ cols: 20, rows: 5 });
 const gridError = ref('');
 
 const openGridEditor = () => {
-        pendingGrid.cols = gridConfig.cols;
-        pendingGrid.rows = gridConfig.rows;
-        gridError.value = '';
-        isEditingGrid.value = true;
+    pendingGrid.cols = gridConfig.cols;
+    pendingGrid.rows = gridConfig.rows;
+    gridError.value = '';
+    isEditingGrid.value = true;
 };
 
 const saveGridEditor = () => {
@@ -132,7 +134,7 @@ const activeItemVisualX = computed(() => {
 });
 
 const activeItemVisualY = computed(() => {
-        if (draggingItemIndex.value !== null) {
+    if (draggingItemIndex.value !== null) {
         return items[draggingItemIndex.value].y + dragOffset.value.y;
     }
     return activeItem.value ? activeItem.value.y : 0;
@@ -141,18 +143,7 @@ const activeItemVisualY = computed(() => {
 const snappedX = computed(() => Math.round(activeItemVisualX.value / CELL_SIZE));
 const snappedY = computed(() => Math.round(activeItemVisualY.value / CELL_SIZE));
 
-const colorPalette = computed(() => {
-    const colors = [];
-    const hueValues = [0, 30, 45, 120, 180, 210, 270, 320];
-    const lightnessValues = [30, 45, 60, 75, 90];
-    
-    for (let l of lightnessValues) {
-        for (let h of hueValues) {
-            colors.push(`hsl(${h}, 85%, ${l}%)`);
-        }
-    }
-    return colors;
-});
+const colorPalette = computed(() => generateColorPalette());
 
 const ghost = reactive({
     x: 0,
@@ -424,6 +415,8 @@ const handleKeydown = (e) => {
     }
 };
 
+const isListModalOpen = ref(false);
+
 onMounted(() => {
     window.addEventListener('keydown', handleKeydown);
 });
@@ -435,184 +428,282 @@ onUnmounted(() => {
 </script>
 
 <template>
-<header>
-    <div class="header-row">
-        <h1>Project Planner POC</h1>
-        <div class="header-controls">
-            <button class="btn-primary" @click="saveProject">Save</button>
-            <button class="btn-secondary" @click="triggerLoad">Load</button>
-            <!-- Hidden file input for loading -->
-            <input 
-                type="file" 
-                ref="fileInput" 
-                style="display: none" 
-                accept=".json" 
-                @change="handleFileUpload"
-            >
+    <TaskListModal
+        :is-open="isListModalOpen"
+        :items="items"
+        :axis-config="axisConfig"
+        :cell-size="CELL_SIZE"
+        @close="isListModalOpen = false"
+    />
+    <header>
+        <div class="header-row">
+            <h1>Project Planner POC</h1>
+            <div class="header-controls">
+                <button
+                    class="btn-secondary"
+                    style="font-size: 1.2rem; padding: 0 10px;"
+                    title="List View"
+                    @click="isListModalOpen = true"
+                >
+                    📜
+                </button>
+                <button
+                    class="btn-primary"
+                    @click="saveProject"
+                >
+                    Save
+                </button>
+                <button
+                    class="btn-secondary"
+                    @click="triggerLoad"
+                >
+                    Load
+                </button>
+                <!-- Hidden file input for loading -->
+                <input 
+                    ref="fileInput" 
+                    type="file" 
+                    style="display: none" 
+                    accept=".json" 
+                    @change="handleFileUpload"
+                >
+            </div>
         </div>
-    </div>
-    <p>Drag the rectangle. Click to edit its properties.</p>
-    <div class="stats">
-        Grid: X: {{ snappedX }} / Y: {{ snappedY }} | Items: {{ items.length }}
-    </div>
-</header>
+        <p>Drag the rectangle. Click to edit its properties.</p>
+        <div class="stats">
+            Grid: X: {{ snappedX }} / Y: {{ snappedY }} | Items: {{ items.length }}
+        </div>
+    </header>
 
-<div class="app-layout">
-    <!-- The Board Area (Scrollable Wrapper) -->
-    <div class="main-content">
-        <!-- Sticky Header -->
-        <div class="axis-header" :style="{ width: gridWidth + 'px' }">
-            <div 
-                v-for="(label, index) in axisLabels" 
-                :key="index" 
-                class="axis-cell"
-                :title="label"
+    <div class="app-layout">
+        <!-- The Board Area (Scrollable Wrapper) -->
+        <div class="main-content">
+            <!-- Sticky Header -->
+            <div
+                class="axis-header"
+                :style="{ width: gridWidth + 'px' }"
             >
-                {{ label }}
+                <div 
+                    v-for="(label, index) in axisLabels" 
+                    :key="index" 
+                    class="axis-cell"
+                    :title="label"
+                >
+                    {{ label }}
+                </div>
+            </div>
+
+            <!-- Board -->
+            <div 
+                ref="board" 
+                class="board-container" 
+                :style="{ width: gridWidth + 'px', height: gridHeight + 'px' }"
+                @click.self="selectedItemId = null"
+            >
+                <!-- The Grid Background -->
+                <!-- Clicking background deselects item -->
+                <div
+                    class="grid-background"
+                    @click="selectedItemId = null"
+                />
+
+                <!-- The Ghost Item -->
+                <div 
+                    v-if="isDragging && ghost.visible"
+                    class="ghost-item"
+                    :style="{
+                        transform: `translate(${ghost.x}px, ${ghost.y}px)`,
+                        width: `${ghost.width}px`,
+                        height: `${ghost.height}px`,
+                        borderColor: ghost.color,
+                        backgroundColor: ghost.color
+                    }"
+                />
+
+                <!-- The Draggable Items -->
+                <div 
+                    v-for="(item, index) in items"
+                    :key="item.id"
+                    class="draggable-item"
+                    :class="{ selected: selectedItemId === item.id }"
+                    :style="getItemStyle(item, index)"
+                    @mousedown.stop="startDrag($event, index)"
+                >
+                    <div>{{ item.name }}</div>
+                </div>
             </div>
         </div>
 
-        <!-- Board -->
-        <div 
-            class="board-container" 
-            ref="board" 
-            @click.self="selectedItemId = null"
-            :style="{ width: gridWidth + 'px', height: gridHeight + 'px' }"
-        >
-            
-            <!-- The Grid Background -->
-            <!-- Clicking background deselects item -->
-            <div class="grid-background" @click="selectedItemId = null"></div>
-
-            <!-- The Ghost Item -->
-            <div 
-                v-if="isDragging && ghost.visible"
-                class="ghost-item"
-                :style="{
-                    transform: `translate(${ghost.x}px, ${ghost.y}px)`,
-                    width: `${ghost.width}px`,
-                    height: `${ghost.height}px`,
-                    borderColor: ghost.color,
-                    backgroundColor: ghost.color
-                }"
-            ></div>
-
-            <!-- The Draggable Items -->
-            <div 
-                v-for="(item, index) in items"
-                :key="item.id"
-                class="draggable-item"
-                :class="{ selected: selectedItemId === item.id }"
-                :style="getItemStyle(item, index)"
-                @mousedown.stop="startDrag($event, index)"
-            >
-                <div>{{ item.name }}</div>
-            </div>
-
-        </div>
-    </div>
-
-    <!-- Editor Panel -->
-    <div class="sidebar">
-        
-        <!-- Grid Settings Box -->
-        <div class="sidebar-section">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                <h2 style="margin: 0; border: none; font-size: 1.1rem;">Grid Settings</h2>
-                <button v-if="!isEditingGrid" class="btn-small" @click="openGridEditor">Edit Grid</button>
-            </div>
-
-            <div v-if="isEditingGrid" class="grid-editor">
-                <div class="form-group">
-                    <label>Columns (Horizontal)</label>
-                    <input type="number" v-model.number="pendingGrid.cols" min="1">
-                </div>
-                <div class="form-group">
-                    <label>Rows (Vertical)</label>
-                    <input type="number" v-model.number="pendingGrid.rows" min="1">
+        <!-- Editor Panel -->
+        <div class="sidebar">
+            <!-- Grid Settings Box -->
+            <div class="sidebar-section">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <h2 style="margin: 0; border: none; font-size: 1.1rem;">
+                        Grid Settings
+                    </h2>
+                    <button
+                        v-if="!isEditingGrid"
+                        class="btn-small"
+                        @click="openGridEditor"
+                    >
+                        Edit Grid
+                    </button>
                 </div>
 
-                <!-- Axis Settings -->
-                <div class="form-group">
-                    <label>Horizontal Axis Labels</label>
-                    <select v-model="axisConfig.mode" style="width: 100%; padding: 8px; margin-bottom: 8px;">
-                        <option value="number">Number (1, 2, ...)</option>
-                        <option value="day">Day (Date)</option>
-                        <option value="week">Week (Number)</option>
-                    </select>
-                </div>
+                <div
+                    v-if="isEditingGrid"
+                    class="grid-editor"
+                >
+                    <div class="form-group">
+                        <label>Columns (Horizontal)</label>
+                        <input
+                            v-model.number="pendingGrid.cols"
+                            type="number"
+                            min="1"
+                        >
+                    </div>
+                    <div class="form-group">
+                        <label>Rows (Vertical)</label>
+                        <input
+                            v-model.number="pendingGrid.rows"
+                            type="number"
+                            min="1"
+                        >
+                    </div>
 
-                <div v-if="axisConfig.mode !== 'number'" class="form-group">
-                    <label>Start Date</label>
-                    <input type="date" v-model="axisConfig.startDate">
-                </div>
+                    <!-- Axis Settings -->
+                    <div class="form-group">
+                        <label>Horizontal Axis Labels</label>
+                        <select
+                            v-model="axisConfig.mode"
+                            style="width: 100%; padding: 8px; margin-bottom: 8px;"
+                        >
+                            <option value="number">
+                                Number (1, 2, ...)
+                            </option>
+                            <option value="day">
+                                Day (Date)
+                            </option>
+                            <option value="week">
+                                Week (Number)
+                            </option>
+                        </select>
+                    </div>
 
-                <div v-if="axisConfig.mode === 'day'" class="form-group" style="display: flex; align-items: center; gap: 8px;">
-                    <input type="checkbox" id="wdOnly" v-model="axisConfig.weekdaysOnly">
-                    <label for="wdOnly" style="margin: 0; font-weight: normal;">Weekdays Only</label>
-                </div>
+                    <div
+                        v-if="axisConfig.mode !== 'number'"
+                        class="form-group"
+                    >
+                        <label>Start Date</label>
+                        <input
+                            v-model="axisConfig.startDate"
+                            type="date"
+                        >
+                    </div>
+
+                    <div
+                        v-if="axisConfig.mode === 'day'"
+                        class="form-group"
+                        style="display: flex; align-items: center; gap: 8px;"
+                    >
+                        <input
+                            id="wdOnly"
+                            v-model="axisConfig.weekdaysOnly"
+                            type="checkbox"
+                        >
+                        <label
+                            for="wdOnly"
+                            style="margin: 0; font-weight: normal;"
+                        >Weekdays Only</label>
+                    </div>
                 
-                <div v-if="gridError" class="error-msg">
-                    {{ gridError }}
+                    <div
+                        v-if="gridError"
+                        class="error-msg"
+                    >
+                        {{ gridError }}
+                    </div>
+
+                    <div class="btn-group">
+                        <button
+                            class="btn-small btn-primary"
+                            @click="saveGridEditor"
+                        >
+                            Save
+                        </button>
+                        <button
+                            class="btn-small btn-secondary"
+                            @click="cancelGridEditor"
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+                <div v-else>
+                    <p style="margin: 0; color: #666; font-size: 0.9rem;">
+                        {{ gridConfig.cols }} x {{ gridConfig.rows }}
+                    </p>
+                </div>
+            </div>
+
+            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+
+            <button
+                class="btn"
+                @click="addItem"
+            >
+                Add Work Item
+            </button>
+
+            <div v-if="selectedItem">
+                <h2>Edit Work Item</h2>
+            
+                <div class="form-group">
+                    <label>Name</label>
+                    <input
+                        v-model="selectedItem.name"
+                        type="text"
+                        @focus="saveHistory"
+                    >
                 </div>
 
-                <div class="btn-group">
-                    <button class="btn-small btn-primary" @click="saveGridEditor">Save</button>
-                    <button class="btn-small btn-secondary" @click="cancelGridEditor">Cancel</button>
+                <div class="form-group">
+                    <label>Length (Grid Units)</label>
+                    <input 
+                        v-model.number="selectedItem.widthUnits" 
+                        type="number" 
+                        min="1" 
+                        step="1"
+                        @focus="saveHistory"
+                    >
+                    <small style="color: #888; display: block; margin-top: 4px;">
+                        Width in px: {{ selectedItem.widthUnits * 50 }}px
+                    </small>
+                </div>
+
+                <div class="form-group">
+                    <label>Color</label>
+                    <div
+                        class="color-palette"
+                        @mousedown="saveHistory"
+                    >
+                        <div 
+                            v-for="color in colorPalette" 
+                            :key="color"
+                            class="color-swatch"
+                            :class="{ active: selectedItem.color === color }"
+                            :style="{ backgroundColor: color }"
+                            @click="selectedItem.color = color"
+                        />
+                    </div>
                 </div>
             </div>
             <div v-else>
-                    <p style="margin: 0; color: #666; font-size: 0.9rem;">
-                    {{ gridConfig.cols }} x {{ gridConfig.rows }}
+                <p style="color: #666; text-align: center; margin-top: 50px;">
+                    Select an item to edit
                 </p>
             </div>
         </div>
-
-        <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-
-        <button class="btn" @click="addItem">Add Work Item</button>
-
-        <div v-if="selectedItem">
-            <h2>Edit Work Item</h2>
-            
-            <div class="form-group">
-                <label>Name</label>
-                <input type="text" v-model="selectedItem.name" @focus="saveHistory">
-            </div>
-
-            <div class="form-group">
-                <label>Length (Grid Units)</label>
-                <input 
-                    type="number" 
-                    v-model.number="selectedItem.widthUnits" 
-                    min="1" 
-                    step="1"
-                    @focus="saveHistory"
-                >
-                <small style="color: #888; display: block; margin-top: 4px;">
-                    Width in px: {{ selectedItem.widthUnits * 50 }}px
-                </small>
-            </div>
-
-            <div class="form-group">
-                <label>Color</label>
-                <div class="color-palette" @mousedown="saveHistory">
-                    <div 
-                        v-for="color in colorPalette" 
-                        :key="color"
-                        class="color-swatch"
-                        :class="{ active: selectedItem.color === color }"
-                        :style="{ backgroundColor: color }"
-                        @click="selectedItem.color = color"
-                    ></div>
-                </div>
-            </div>
-        </div>
-        <div v-else>
-            <p style="color: #666; text-align: center; margin-top: 50px;">
-                Select an item to edit
-            </p>
-        </div>
     </div>
-</div>
 </template>
