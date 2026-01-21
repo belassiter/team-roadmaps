@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Project Planner POC</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <div class="header-row">
+                <h1>Project Planner POC</h1>
+                <div class="header-controls">
+                    <button class="btn-primary" @click="saveProject">Save</button>
+                    <button class="btn-secondary" @click="triggerLoad">Load</button>
+                    <!-- Hidden file input for loading -->
+                    <input 
+                        type="file" 
+                        ref="fileInput" 
+                        style="display: none" 
+                        accept=".json" 
+                        @change="handleFileUpload"
+                    >
+                </div>
+            </div>
+            <p>Drag the rectangle. Click to edit its properties.</p>
+            <div class="stats">
+                Grid: X: {{ snappedX }} / Y: {{ snappedY }} | Items: {{ items.length }}
+            </div>
+        </header>
+
+        <div class="app-layout">
+            <!-- The Board Area (Scrollable Wrapper) -->
+            <div class="main-content">
+                <!-- Sticky Header -->
+                <div class="axis-header" :style="{ width: gridWidth + 'px' }">
+                    <div 
+                        v-for="(label, index) in axisLabels" 
+                        :key="index" 
+                        class="axis-cell"
+                        :title="label"
+                    >
+                        {{ label }}
+                    </div>
+                </div>
+
+                <!-- Board -->
+                <div 
+                    class="board-container" 
+                    ref="board" 
+                    @click.self="selectedItemId = null"
+                    :style="{ width: gridWidth + 'px', height: gridHeight + 'px' }"
+                >
+                    
+                    <!-- The Grid Background -->
+                    <!-- Clicking background deselects item -->
+                    <div class="grid-background" @click="selectedItemId = null"></div>
+
+                    <!-- The Ghost Item -->
+                    <div 
+                        v-if="isDragging && ghost.visible"
+                        class="ghost-item"
+                        :style="{
+                            transform: `translate(${ghost.x}px, ${ghost.y}px)`,
+                            width: `${ghost.width}px`,
+                            height: `${ghost.height}px`,
+                            borderColor: ghost.color,
+                            backgroundColor: ghost.color
+                        }"
+                    ></div>
+
+                    <!-- The Draggable Items -->
+                    <div 
+                        v-for="(item, index) in items"
+                        :key="item.id"
+                        class="draggable-item"
+                        :class="{ selected: selectedItemId === item.id }"
+                        :style="getItemStyle(item, index)"
+                        @mousedown.stop="startDrag($event, index)"
+                    >
+                        <div>{{ item.name }}</div>
+                    </div>
+
+                </div>
+            </div>
+
+            <!-- Editor Panel -->
+            <div class="sidebar">
+                
+                <!-- Grid Settings Box -->
+                <div class="sidebar-section">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h2 style="margin: 0; border: none; font-size: 1.1rem;">Grid Settings</h2>
+                        <button v-if="!isEditingGrid" class="btn-small" @click="openGridEditor">Edit Grid</button>
+                    </div>
+
+                    <div v-if="isEditingGrid" class="grid-editor">
+                        <div class="form-group">
+                            <label>Columns (Horizontal)</label>
+                            <input type="number" v-model.number="pendingGrid.cols" min="1">
+                        </div>
+                        <div class="form-group">
+                            <label>Rows (Vertical)</label>
+                            <input type="number" v-model.number="pendingGrid.rows" min="1">
+                        </div>
+
+                        <!-- Axis Settings -->
+                        <div class="form-group">
+                            <label>Horizontal Axis Labels</label>
+                            <select v-model="axisConfig.mode" style="width: 100%; padding: 8px; margin-bottom: 8px;">
+                                <option value="number">Number (1, 2, ...)</option>
+                                <option value="day">Day (Date)</option>
+                                <option value="week">Week (Number)</option>
+                            </select>
+                        </div>
+
+                        <div v-if="axisConfig.mode !== 'number'" class="form-group">
+                            <label>Start Date</label>
+                            <input type="date" v-model="axisConfig.startDate">
+                        </div>
+
+                        <div v-if="axisConfig.mode === 'day'" class="form-group" style="display: flex; align-items: center; gap: 8px;">
+                            <input type="checkbox" id="wdOnly" v-model="axisConfig.weekdaysOnly">
+                            <label for="wdOnly" style="margin: 0; font-weight: normal;">Weekdays Only</label>
+                        </div>
+                        
+                        <div v-if="gridError" class="error-msg">
+                            {{ gridError }}
+                        </div>
+
+                        <div class="btn-group">
+                            <button class="btn-small btn-primary" @click="saveGridEditor">Save</button>
+                            <button class="btn-small btn-secondary" @click="cancelGridEditor">Cancel</button>
+                        </div>
+                    </div>
+                    <div v-else>
+                         <p style="margin: 0; color: #666; font-size: 0.9rem;">
+                            {{ gridConfig.cols }} x {{ gridConfig.rows }}
+                        </p>
+                    </div>
+                </div>
+
+                <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
+
+                <button class="btn" @click="addItem">Add Work Item</button>
+
+                <div v-if="selectedItem">
+                    <h2>Edit Work Item</h2>
+                    
+                    <div class="form-group">
+                        <label>Name</label>
+                        <input type="text" v-model="selectedItem.name" @focus="saveHistory">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Length (Grid Units)</label>
+                        <input 
+                            type="number" 
+                            v-model.number="selectedItem.widthUnits" 
+                            min="1" 
+                            step="1"
+                            @focus="saveHistory"
+                        >
+                        <small style="color: #888; display: block; margin-top: 4px;">
+                            Width in px: {{ selectedItem.widthUnits * 50 }}px
+                        </small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Color</label>
+                        <div class="color-palette" @mousedown="saveHistory">
+                            <div 
+                                v-for="color in colorPalette" 
+                                :key="color"
+                                class="color-swatch"
+                                :class="{ active: selectedItem.color === color }"
+                                :style="{ backgroundColor: color }"
+                                @click="selectedItem.color = color"
+                            ></div>
+                        </div>
+                    </div>
+                </div>
+                <div v-else>
+                    <p style="color: #666; text-align: center; margin-top: 50px;">
+                        Select an item to edit
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Import Vue from CDN -->
+    <script type="importmap">
+        {
+          "imports": {
+            "vue": "https://unpkg.com/vue@3/dist/vue.esm-browser.js"
+          }
+        }
+    </script>
+    <script type="module" src="./app.js"></script>
+</body>
+</html>
