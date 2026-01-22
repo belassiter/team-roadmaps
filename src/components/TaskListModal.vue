@@ -3,7 +3,6 @@ import { ref, computed } from 'vue';
 import type { Directive } from 'vue';
 import { filterItems, sortItems } from '../utils/listHelpers';
 import { getGridIndexFromDate, getDateFromGridIndex } from '../utils/gridConverters';
-import { generateColorPalette } from '../utils/colors';
 
 interface TaskItem {
     id: number | string;
@@ -21,15 +20,23 @@ interface AxisConfig {
     [key: string]: any;
 }
 
+interface GridConfig {
+    cols: number;
+    rows: number;
+    rowDefinitions: Record<string, string>;
+}
+
 const props = withDefaults(defineProps<{
     isOpen: boolean;
     items?: TaskItem[];
     axisConfig?: AxisConfig;
+    gridConfig?: GridConfig;
     cellSize?: number;
 }>(), {
     cellSize: 50,
     items: () => [],
-    axisConfig: () => ({ mode: 'number', startDate: '' })
+    axisConfig: () => ({ mode: 'number', startDate: '' }),
+    gridConfig: () => ({ cols: 20, rows: 5, rowDefinitions: {} })
 });
 
 const emit = defineEmits<{
@@ -44,7 +51,36 @@ const vFocus: Directive = {
     mounted: (el) => el.focus()
 };
 
-const colorPalette = generateColorPalette();
+
+const getItemRowName = (item: TaskItem) => {
+    const r = Math.round(item.y / props.cellSize);
+    if (props.gridConfig && props.gridConfig.rowDefinitions && props.gridConfig.rowDefinitions[r]) {
+        return props.gridConfig.rowDefinitions[r];
+    }
+    return String(r + 1);
+};
+
+const getItemEndDate = (item: TaskItem) => {
+    const startIdx = Math.round(item.x / props.cellSize);
+    const endIdx = startIdx + item.widthUnits;
+    if (props.axisConfig.mode === 'number') {
+        return endIdx + 1;
+    } else {
+        const d = getDateFromGridIndex(endIdx, props.axisConfig.startDate, props.axisConfig.mode);
+        // Format based on mode if needed, for now standard date string or just date
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        if (props.axisConfig.mode === 'week') {
+            return `W${Math.ceil(d.getDate()/7)}... (approx)`; // Simplified
+        }
+        return `${year}-${month}-${day}`;
+    }
+};
+
+const getItemLength = (item: TaskItem) => {
+    return item.widthUnits; // "Grid Units"
+};
 
 // --- Editing State ---
 const editingId = ref<number | string | null>(null);
@@ -197,16 +233,18 @@ const processedItems = computed(() => {
                             <tr>
                                 <th @click="toggleSort('name')">
                                     Name 
-                                    <span v-if="sortKey === 'name'">{{ sortOrder === 'asc' ? '' : '' }}</span>
-                                </th>
-                                <th @click="toggleSort('x')">
-                                    Start
-                                    <span v-if="sortKey === 'x'">{{ sortOrder === 'asc' ? '' : '' }}</span>
+                                    <span v-if="sortKey === 'name'">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
                                 </th>
                                 <th @click="toggleSort('y')">
                                     Row
-                                    <span v-if="sortKey === 'y'">{{ sortOrder === 'asc' ? '' : '' }}</span>
+                                    <span v-if="sortKey === 'y'">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
                                 </th>
+                                <th @click="toggleSort('x')">
+                                    Start
+                                    <span v-if="sortKey === 'x'">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
+                                </th>
+                                <th>End</th>
+                                <th>Len</th>
                                 <th>Color</th>
                             </tr>
                         </thead>
@@ -231,6 +269,23 @@ const processedItems = computed(() => {
                                         @click.stop
                                     >
                                     <span v-else>{{ item.name }}</span>
+                                </td>
+
+                                <!-- ROW COLUMN -->
+                                <td
+                                    class="editable-cell"
+                                    @click="startEdit(item, 'y')"
+                                >
+                                    <input 
+                                        v-if="editingId === item.id && editingField === 'y'"
+                                        v-model="editValue"
+                                        type="number"
+                                        class="edit-input"
+                                        @blur="commitEdit(item)"
+                                        @keyup.enter="commitEdit(item)"
+                                        @click.stop
+                                    >
+                                    <span v-else>{{ getItemRowName(item) }}</span>
                                 </td>
 
                                 <!-- START COLUMN -->
@@ -262,22 +317,11 @@ const processedItems = computed(() => {
                                     <span v-else>{{ getDisplayStart(item) }}</span>
                                 </td>
 
-                                <!-- ROW COLUMN -->
-                                <td
-                                    class="editable-cell"
-                                    @click="startEdit(item, 'y')"
-                                >
-                                    <input 
-                                        v-if="editingId === item.id && editingField === 'y'"
-                                        v-model="editValue"
-                                        type="number"
-                                        class="edit-input"
-                                        @blur="commitEdit(item)"
-                                        @keyup.enter="commitEdit(item)"
-                                        @click.stop
-                                    >
-                                    <span v-else>{{ Math.round(item.y / props.cellSize) + 1 }}</span>
-                                </td>
+                                <!-- END COLUMN -->
+                                <td>{{ getItemEndDate(item) }}</td>
+
+                                <!-- LENGTH COLUMN -->
+                                <td>{{ getItemLength(item) }}</td>
 
                                 <!-- COLOR COLUMN -->
                                 <td style="position: relative;">

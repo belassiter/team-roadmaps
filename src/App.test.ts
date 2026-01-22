@@ -61,7 +61,7 @@ describe('App.vue', () => {
         
         // Find Add button
         const buttons = wrapper.findAll('button');
-        const addButton = buttons.find(b => b.text() === 'Add Work Item');
+        const addButton = buttons.find(b => b.text().includes('Add Work Item'));
         
         expect(addButton?.exists()).toBe(true);
         await addButton?.trigger('click');
@@ -78,7 +78,7 @@ describe('App.vue', () => {
 
         // 1. Add an item
         const buttons = wrapper.findAll('button');
-        const addButton = buttons.find(b => b.text() === 'Add Work Item');
+        const addButton = buttons.find(b => b.text().includes('Add Work Item'));
         await addButton?.trigger('click');
 
         const countAfterAdd = wrapper.findAll('.draggable-item').length;
@@ -98,14 +98,13 @@ describe('App.vue', () => {
         
         // Add item to ensure we have something to delete
         const buttons = wrapper.findAll('button');
-        const addButton = buttons.find(b => b.text() === 'Add Work Item');
+        const addButton = buttons.find(b => b.text().includes('Add Work Item'));
         await addButton?.trigger('click');
         
         const countBefore = wrapper.findAll('.draggable-item').length;
         
         // Find and click delete button
-        // Need to update button finding properly as the DOM changed
-       const deleteButton = wrapper.findAll('button').find(b => b.text() === 'Delete Selected Item(s)');
+       const deleteButton = wrapper.findAll('button').find(b => b.text().includes('Delete Selected'));
        expect(deleteButton?.exists()).toBe(true);
        
        await deleteButton?.trigger('click');

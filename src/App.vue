@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
+import { ref, reactive, computed, onMounted, onUnmounted, type Directive } from 'vue';
 import { formatDate, parseLocalYMD } from './utils/dates';
 import { checkCollision, resolveBackfill, calculateLayoutOutcome, type PhysicsItem } from './utils/physics';
-import { generateColorPalette } from './utils/colors'; 
 import TaskListModal from './components/TaskListModal.vue';
+import GridSettingsModal from './components/GridSettingsModal.vue';
+import TaskEditModal from './components/TaskEditModal.vue';
 
 // --- Interfaces ---
 interface TaskItem extends PhysicsItem {
@@ -15,6 +16,7 @@ interface TaskItem extends PhysicsItem {
 interface GridConfig {
     cols: number;
     rows: number;
+    rowDefinitions: Record<string, string>; // "0": "Row 1"
 }
 
 interface AxisConfig {
@@ -29,12 +31,45 @@ const CELL_SIZE = 50; // Fixed cell size
 
 const gridConfig = reactive<GridConfig>({
     cols: 20,
-    rows: 5
+    rows: 5,
+    rowDefinitions: {}
 });
 
 // Computed grid dimensions
 const gridWidth = computed(() => gridConfig.cols * CELL_SIZE);
-const gridHeight = computed(() => gridConfig.rows * CELL_SIZE);
+const gridHeight = computed(() => visibleRowIndices.value.length * CELL_SIZE);
+
+const rowFilter = ref('');
+
+const visibleRowIndices = computed(() => {
+    if (!rowFilter.value.trim()) {
+        return Array.from({ length: gridConfig.rows }, (_, i) => i);
+    }
+    const query = rowFilter.value.toLowerCase();
+    const result: number[] = [];
+    for (let i = 0; i < gridConfig.rows; i++) {
+        const name = getRowName(i).toLowerCase();
+        if (name.includes(query)) {
+            result.push(i);
+        }
+    }
+    return result;
+});
+
+const getVisualY = (realY: number) => {
+    const row = Math.round(realY / CELL_SIZE);
+    const visualIndex = visibleRowIndices.value.indexOf(row);
+    if (visualIndex === -1) return null; 
+    return visualIndex * CELL_SIZE;
+};
+
+const getRealYFromVisualY = (visualY: number) => {
+    const vRow = Math.round(visualY / CELL_SIZE);
+    if (visibleRowIndices.value.length === 0) return 0;
+    const clampedVRow = Math.max(0, Math.min(vRow, visibleRowIndices.value.length - 1));
+    const realRow = visibleRowIndices.value[clampedVRow];
+    return realRow * CELL_SIZE;
+};
 
 // --- Axis Settings ---
 const axisConfig = reactive<AxisConfig>({
@@ -72,54 +107,80 @@ const axisLabels = computed(() => {
     return labels;
 });
 
-// --- Grid Editor State ---
-const isEditingGrid = ref(false);
-const pendingGrid = reactive({ cols: 20, rows: 5 });
-const gridError = ref('');
-
-const openGridEditor = () => {
-    pendingGrid.cols = gridConfig.cols;
-    pendingGrid.rows = gridConfig.rows;
-    gridError.value = '';
-    isEditingGrid.value = true;
+const getRowName = (rowIndex: number): string => {
+    if (gridConfig.rowDefinitions[rowIndex]) {
+        return gridConfig.rowDefinitions[rowIndex];
+    }
+    return String(rowIndex + 1);
 };
 
-const saveGridEditor = () => {
-    const newW = pendingGrid.cols * CELL_SIZE;
-    const newH = pendingGrid.rows * CELL_SIZE;
+// --- Row Editing ---
+const editingRowIndex = ref<number | null>(null);
+const tempRowName = ref('');
+
+const startEditRow = (index: number) => {
+    editingRowIndex.value = index;
+    tempRowName.value = getRowName(index);
+};
+
+const saveEditRow = () => {
+    if (editingRowIndex.value !== null) {
+        if (tempRowName.value.trim() === '') {
+            delete gridConfig.rowDefinitions[editingRowIndex.value];
+        } else {
+            gridConfig.rowDefinitions[editingRowIndex.value] = tempRowName.value.trim();
+        }
+        editingRowIndex.value = null;
+    }
+};
+
+const cancelEditRow = () => {
+    editingRowIndex.value = null;
+};
+
+// --- Modals State ---
+const isGridSettingsOpen = ref(false);
+const isTaskEditOpen = computed(() => selectedItemIds.value.size === 1);
+
+const updateGridSettings = (newGrid: {cols: number, rows: number}, newAxis: AxisConfig) => {
+    // Validate
+    const newW = newGrid.cols * CELL_SIZE;
+    const newH = newGrid.rows * CELL_SIZE;
 
     // Validate against existing items
     for (const item of items) {
         const itemRight = item.x + (item.widthUnits * CELL_SIZE);
         const itemBottom = item.y + CELL_SIZE;
-
+ 
         if (itemRight > newW) {
-            gridError.value = `Error: Item "${item.name}" would be cut off horizontally.`;
+            alert(`Error: Item "${item.name}" would be cut off horizontally.`);
             return;
         }
         if (itemBottom > newH) {
-            gridError.value = `Error: Item "${item.name}" would be cut off vertically.`;
+            alert(`Error: Item "${item.name}" would be cut off vertically.`);
             return;
         }
     }
 
-    gridConfig.cols = pendingGrid.cols;
-    gridConfig.rows = pendingGrid.rows;
-    isEditingGrid.value = false;
-};
-
-const cancelGridEditor = () => {
-    isEditingGrid.value = false;
-    gridError.value = '';
+    gridConfig.cols = newGrid.cols;
+    gridConfig.rows = newGrid.rows;
+    Object.assign(axisConfig, newAxis);
+    isGridSettingsOpen.value = false;
 };
 
 // --- State ---
 const boardContainer = ref<HTMLElement | null>(null);
 const axisHeader = ref<HTMLElement | null>(null);
+const rowHeader = ref<HTMLElement | null>(null);
 
 const handleScroll = () => {
-    if (boardContainer.value && axisHeader.value) {
-        axisHeader.value.scrollLeft = boardContainer.value.scrollLeft;
+    if (boardContainer.value) {
+        if (axisHeader.value) {
+            axisHeader.value.scrollLeft = boardContainer.value.scrollLeft;
+        }
+        if (rowHeader.value) {
+            rowHeader.value.scrollTop = boardContainer.value.scrollTop;
+        }
     }
 };
 
@@ -158,30 +219,6 @@ const selectedItem = computed(() => {
     }
     return null;
 });
-
-const activeItem = computed(() => {
-    if (draggingItemIndex.value !== null) return items[draggingItemIndex.value];
-    return selectedItem.value || items[0];
-});
-
-const activeItemVisualX = computed(() => {
-    if (draggingItemIndex.value !== null) {
-        return items[draggingItemIndex.value].x + dragOffset.value.x;
-    }
-    return activeItem.value ? activeItem.value.x : 0;
-});
-
-const activeItemVisualY = computed(() => {
-    if (draggingItemIndex.value !== null) {
-        return items[draggingItemIndex.value].y + dragOffset.value.y;
-    }
-    return activeItem.value ? activeItem.value.y : 0;
-});
-
-const snappedX = computed(() => Math.round(activeItemVisualX.value / CELL_SIZE));
-const snappedY = computed(() => Math.round(activeItemVisualY.value / CELL_SIZE));
-
-const colorPalette = computed(() => generateColorPalette());
 
 const ghost = reactive({
     x: 0,
@@ -249,10 +286,17 @@ const undo = () => {
 // --- Methods ---
 
 const getItemStyle = (item: TaskItem, index: number) => {
+    const visualYStart = getVisualY(item.y);
+    // If the item is in a hidden row, hide it (unless it's being dragged, maybe? 
+    // But if we start dragging, it must be visible. If we drag it and filter changes... unlikely edge case).
+    if (visualYStart === null) {
+        return { display: 'none' };
+    }
+
     const isBeingDragged = draggingItemIndex.value === index;
     
     let x = item.x;
-    let y = item.y;
+    let y = visualYStart;
     
     if (isBeingDragged) {
         x += dragOffset.value.x;
@@ -417,12 +461,23 @@ const updateGhost = () => {
     
     // Calculate Anchor New Position
     let anchorRawX = anchorItem.x + dragOffset.value.x;
-    let anchorRawY = anchorItem.y + dragOffset.value.y;
+    // let anchorRawY = anchorItem.y + dragOffset.value.y; // unused in filtered logic
     let anchorSnappedX = Math.round(anchorRawX / CELL_SIZE) * CELL_SIZE;
-    let anchorSnappedY = Math.round(anchorRawY / CELL_SIZE) * CELL_SIZE;
     
+    // Y Logic: Map Visual Drag -> Visual Snap -> Real Snap
+    let anchorSnappedY = anchorItem.y;
+    const anchorVisualStart = getVisualY(anchorItem.y);
+
+    if (anchorVisualStart !== null) {
+        const anchorVisualY = anchorVisualStart + dragOffset.value.y;
+        // Snap visually
+        const anchorVisualSnapped = Math.round(anchorVisualY / CELL_SIZE) * CELL_SIZE;
+        // Convert to Real
+        anchorSnappedY = getRealYFromVisualY(anchorVisualSnapped);
+    }
+
     anchorSnappedX = Math.max(0, anchorSnappedX);
-    anchorSnappedY = Math.max(0, anchorSnappedY);
+    // anchorSnappedY is handled by getRealYFromVisualY which clamps to valid rows
     
     // Constrain Anchor (assuming group follows)
     // Note: We might want to constrain the whole group, but constraining anchor is a good start.
@@ -433,7 +488,7 @@ const updateGhost = () => {
         const itemPxWidth = anchorItem.widthUnits * CELL_SIZE;
         anchorSnappedX = Math.min(anchorSnappedX, gridWidth.value - itemPxWidth);
     }
-    anchorSnappedY = Math.min(anchorSnappedY, gridHeight.value - CELL_SIZE);
+    // anchorSnappedY = Math.min(anchorSnappedY, gridHeight.value - CELL_SIZE); // Removed, handled by clamp mechanism
     
     // Delta for the group
     const dx = anchorSnappedX - anchorItem.x;
@@ -505,16 +560,23 @@ const stopDrag = () => {
         const anchorItem = items[index];
         const draggedIds = Array.from(selectedItemIds.value);
          
-        // Re-calculating snap with constraints (simplified for brevity, should match updateGhost)
+        // Re-calculating snap with constraints
         let anchorSnappedX = Math.round((anchorItem.x + dragOffset.value.x) / CELL_SIZE) * CELL_SIZE;
-        let anchorSnappedY = Math.round((anchorItem.y + dragOffset.value.y) / CELL_SIZE) * CELL_SIZE;
         anchorSnappedX = Math.max(0, anchorSnappedX);
-        anchorSnappedY = Math.max(0, anchorSnappedY);
+
+        let anchorSnappedY = anchorItem.y;
+        const anchorVisualStart = getVisualY(anchorItem.y);
+        if (anchorVisualStart !== null) {
+            const anchorVisualY = anchorVisualStart + dragOffset.value.y;
+            const anchorVisualSnapped = Math.round(anchorVisualY / CELL_SIZE) * CELL_SIZE;
+            anchorSnappedY = getRealYFromVisualY(anchorVisualSnapped);
+        }
+
         if (!isBumpMode.value) {
             const itemPxWidth = anchorItem.widthUnits * CELL_SIZE;
             anchorSnappedX = Math.min(anchorSnappedX, gridWidth.value - itemPxWidth);
         }
-        anchorSnappedY = Math.min(anchorSnappedY, gridHeight.value - CELL_SIZE);
+        // anchorSnappedY = Math.min(anchorSnappedY, gridHeight.value - CELL_SIZE); // Removed
          
         const finalDx = anchorSnappedX - anchorItem.x;
         const finalDy = anchorSnappedY - anchorItem.y;
@@ -648,6 +710,7 @@ const handleFileUpload = (event: Event) => {
                 if (data.gridConfig) {
                     gridConfig.cols = data.gridConfig.cols;
                     gridConfig.rows = data.gridConfig.rows;
+                    gridConfig.rowDefinitions = data.gridConfig.rowDefinitions || {};
                 }
 
                 if (data.axisConfig) {
@@ -687,6 +750,10 @@ const handleKeydown = (e: KeyboardEvent) => {
 
 const isListModalOpen = ref(false);
 
+const vFocus: Directive = {
+    mounted: (el) => el.focus()
+};
+
 onMounted(() => {
     window.addEventListener('keydown', handleKeydown);
     console.log('Grid Config:', gridConfig);
@@ -705,11 +772,38 @@ onUnmounted(() => {
         :items="items"
         :axis-config="axisConfig"
         :cell-size="CELL_SIZE"
+        :grid-config="gridConfig"
         @close="isListModalOpen = false"
     />
+
+    <GridSettingsModal
+        :is-open="isGridSettingsOpen"
+        :grid-config="gridConfig"
+        :axis-config="axisConfig"
+        @close="isGridSettingsOpen = false"
+        @save="updateGridSettings"
+    />
+
+    <TaskEditModal
+        :is-open="isTaskEditOpen"
+        :item="selectedItem"
+        @close="selectedItemIds.clear()"
+        @update="saveHistory"
+    />
+
     <header>
         <div class="header-row">
-            <h1>Project Planner POC</h1>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <button
+                    class="btn-icon"
+                    title="Grid Settings"
+                    @click="isGridSettingsOpen = true"
+                >
+                    ⚙️
+                </button>
+                <h1>Team Roadmaps</h1>
+            </div>
+
             <div class="header-controls">
                 <button
                     class="btn-secondary"
@@ -741,336 +835,226 @@ onUnmounted(() => {
                 >
             </div>
         </div>
-        <p>Drag the rectangle. Click to edit its properties.</p>
-        <div class="stats">
-            Grid: X: {{ snappedX }} / Y: {{ snappedY }} | Items: {{ items.length }}
-            <button
-                class="btn-secondary"
-                style="margin-left: 20px; font-weight: bold;"
-                :style="{ color: isBumpMode ? 'green' : 'red' }"
-                @click="toggleBumpMode"
-            >
-                Bump Mode: {{ isBumpMode ? 'ON' : 'OFF' }}
-            </button>
-            <button
-                class="btn-secondary"
-                style="margin-left: 10px; font-weight: bold;"
-                :style="{ color: isBackfillMode ? 'blue' : 'gray' }"
-                @click="isBackfillMode = !isBackfillMode"
-            >
-                Backfill: {{ isBackfillMode ? 'ON' : 'OFF' }}
-            </button>
+        
+        <div class="toolbar-row">
+            <div class="instructions">
+                Drag the rectangle. Click to edit.
+            </div>
+            <div class="toolbar-actions">
+                <button
+                    class="btn-secondary"
+                    style="font-weight: bold;"
+                    :class="{ active: isBumpMode }"
+                    :style="{ color: isBumpMode ? 'green' : 'red' }"
+                    @click="toggleBumpMode"
+                >
+                    Bump: {{ isBumpMode ? 'ON' : 'OFF' }}
+                </button>
+                <button
+                    class="btn-secondary"
+                    style="font-weight: bold;"
+                    :class="{ active: isBackfillMode }"
+                    :style="{ color: isBackfillMode ? 'blue' : 'gray' }"
+                    @click="isBackfillMode = !isBackfillMode"
+                >
+                    Backfill: {{ isBackfillMode ? 'ON' : 'OFF' }}
+                </button>
+                
+                <div class="separator" />
+                
+                <button
+                    v-if="selectedItemIds.size > 0"
+                    class="btn-danger"
+                    @click="deleteItem"
+                >
+                    Delete Selected
+                </button>
+                <button
+                    class="btn-primary"
+                    @click="addItem"
+                >
+                    + Add Work Item
+                </button>
+            </div>
         </div>
     </header>
 
     <div class="app-layout">
         <!-- The Board Area (Scrollable Wrapper) -->
         <div class="main-content">
-            <!-- Sticky Header -->
-            <div
-                ref="axisHeader"
-                class="axis-header"
-            >
-                <div 
-                    class="axis-content"
-                    :style="{ width: gridWidth + 'px' }"
-                >
-                    <div
-                        v-for="(label, index) in axisLabels"
-                        :key="index"
-                        class="axis-cell"
-                        :title="String(label)"
+            <!-- Top Controls (Axis Header) -->
+            <div class="grid-header-row">
+                <!-- Empty Corner for Row Labels -->
+                <div class="corner-cell">
+                    <input 
+                        v-model="rowFilter" 
+                        placeholder="Filter..." 
+                        style="width: 100%; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; padding: 4px;"
                     >
-                        {{ label }}
-                    </div>
                 </div>
-            </div>
 
-            <!-- Board -->
-            <div
-                ref="boardContainer"
-                class="board-container"
-                @scroll="handleScroll"
-                @click.self="selectedItemIds.clear()"
-            >
+                <!-- Sticky Axis Header -->
                 <div
-                    class="board-content"
-                    :style="{ width: gridWidth + 'px', height: gridHeight + 'px' }"
+                    ref="axisHeader"
+                    class="axis-header"
                 >
-                    <!-- The Grid Background -->
-                    <!-- Clicking background deselects item -->
-                    <div
-                        class="grid-background"
-                        @click="selectedItemIds.clear()"
-                    />
-
-                    <!-- The Ghost Items (Multi-Drag) -->
                     <div 
-                        v-if="isDragging && draggedGhosts.length > 0"
-                    >
-                        <template
-                            v-for="g in draggedGhosts"
-                            :key="'drag-ghost-' + g.id"
-                        >
-                            <div 
-                                class="ghost-item"
-                                :style="{
-                                    transform: `translate(${g.x}px, ${g.y}px)`,
-                                    width: `${g.widthUnits * CELL_SIZE}px`,
-                                    height: `${CELL_SIZE}px`,
-                                    borderColor: g.color || '#ccc',
-                                    backgroundColor: g.color || '#ccc'
-                                }"
-                            />
-                        </template>
-                    </div>
-
-                    <!-- The Bump Mode Ghosts -->
-                    <div 
-                        v-if="isBumpMode && bumpGhosts.length > 0"
-                    >
-                        <!-- We only show ghosts for items that are actually bumped (id in bumpedItemIds) OR the candidate ghost -->
-                        <!-- Actually, the candidate ghost logic is separate. -->
-                        <template
-                            v-for="g in bumpGhosts"
-                            :key="'bump-ghost-' + g.id"
-                        >
-                            <div
-                                v-if="bumpedItemIds.has(g.id)"
-                                class="ghost-item bump-ghost-hatched"
-                                style="z-index: 5; border-style: solid; display: flex; align-items: center; justify-content: center; overflow: hidden; white-space: nowrap; font-size: 0.85rem; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.5);"
-                                :style="{
-                                    transform: `translate(${g.x}px, ${g.y}px)`,
-                                    width: `${g.widthUnits * CELL_SIZE}px`,
-                                    height: `${CELL_SIZE}px`,
-                                    backgroundColor: g.color || '#ccc',
-                                    borderColor: 'rgba(0,0,0,0.5)'
-                                }"
-                            >
-                                {{ items.find(i => i.id === g.id)?.name }}
-                            </div>
-                        </template>
-                    </div>
-
-                    <!-- The Backfill Mode Ghosts -->
-                    <div 
-                        v-if="isBackfillMode && backfillGhosts.length > 0"
-                    >
-                        <template
-                            v-for="g in backfillGhosts"
-                            :key="'backfill-ghost-' + g.id"
-                        >
-                            <div
-                                class="ghost-item bump-ghost-hatched"
-                                style="z-index: 5; border-style: solid; display: flex; align-items: center; justify-content: center; overflow: hidden; white-space: nowrap; font-size: 0.85rem; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.5);"
-                                :style="{
-                                    transform: `translate(${g.x}px, ${g.y}px)`,
-                                    width: `${g.widthUnits * CELL_SIZE}px`,
-                                    height: `${CELL_SIZE}px`,
-                                    backgroundColor: g.color || '#ccc',
-                                    borderColor: 'rgba(0,0,0,0.5)'
-                                }"
-                            >
-                                {{ items.find(i => i.id === g.id)?.name }}
-                            </div>
-                        </template>
-                    </div>
-
-                    <!-- The Draggable Items -->
-                    <div
-                        v-for="(item, index) in items"
-                        v-show="!bumpedItemIds.has(item.id)"
-                        :key="item.id"
-                        class="draggable-item"
-                        :class="{ selected: selectedItemIds.has(item.id) }"
-                        :style="getItemStyle(item, index)"
-                        @mousedown.stop="startDrag($event, index)"
-                    >
-                        <div>{{ item.name }}</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Editor Panel -->
-        <div class="sidebar">
-            <!-- Grid Settings Box -->
-            <div class="sidebar-section">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                    <h2 style="margin: 0; border: none; font-size: 1.1rem;">
-                        Grid Settings
-                    </h2>
-                    <button
-                        v-if="!isEditingGrid"
-                        class="btn-small"
-                        @click="openGridEditor"
-                    >
-                        Edit Grid
-                    </button>
-                </div>
-
-                <div
-                    v-if="isEditingGrid"
-                    class="grid-editor"
-                >
-                    <div class="form-group">
-                        <label>Columns (Horizontal)</label>
-                        <input
-                            v-model.number="pendingGrid.cols"
-                            type="number"
-                            min="1"
-                        >
-                    </div>
-                    <div class="form-group">
-                        <label>Rows (Vertical)</label>
-                        <input
-                            v-model.number="pendingGrid.rows"
-                            type="number"
-                            min="1"
-                        >
-                    </div>
-
-                    <!-- Axis Settings -->
-                    <div class="form-group">
-                        <label>Horizontal Axis Labels</label>
-                        <select
-                            v-model="axisConfig.mode"
-                            style="width: 100%; padding: 8px; margin-bottom: 8px;"
-                        >
-                            <option value="number">
-                                Number (1, 2, ...)
-                            </option>
-                            <option value="day">
-                                Day (Date)
-                            </option>
-                            <option value="week">
-                                Week (Number)
-                            </option>
-                        </select>
-                    </div>
-
-                    <div
-                        v-if="axisConfig.mode !== 'number'"
-                        class="form-group"
-                    >
-                        <label>Start Date</label>
-                        <input
-                            v-model="axisConfig.startDate"
-                            type="date"
-                        >
-                    </div>
-
-                    <div
-                        v-if="axisConfig.mode === 'day'"
-                        class="form-group"
-                        style="display: flex; align-items: center; gap: 8px;"
-                    >
-                        <input
-                            id="wdOnly"
-                            v-model="axisConfig.weekdaysOnly"
-                            type="checkbox"
-                        >
-                        <label
-                            for="wdOnly"
-                            style="margin: 0; font-weight: normal;"
-                        >Weekdays Only</label>
-                    </div>
-
-                    <div
-                        v-if="gridError"
-                        class="error-msg"
-                    >
-                        {{ gridError }}
-                    </div>
-
-                    <div class="btn-group">
-                        <button
-                            class="btn-small btn-primary"
-                            @click="saveGridEditor"
-                        >
-                            Save
-                        </button>
-                        <button
-                            class="btn-small btn-secondary"
-                            @click="cancelGridEditor"
-                        >
-                            Cancel
-                        </button>
-                    </div>
-                </div>
-                <div v-else>
-                    <p style="margin: 0; color: #666; font-size: 0.9rem;">
-                        {{ gridConfig.cols }} x {{ gridConfig.rows }}
-                    </p>
-                </div>
-            </div>
-
-            <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-
-            <div style="display: flex; gap: 10px; margin-bottom: 20px;">
-                <button
-                    class="btn"
-                    @click="addItem"
-                >
-                    Add Work Item
-                </button>
-                <button
-                    v-if="selectedItemIds.size > 0"
-                    class="btn"
-                    style="background-color: #ef4444; color: white; border: none;"
-                    @click="deleteItem"
-                >
-                    Delete Selected Item(s)
-                </button>
-            </div>
-
-            <div v-if="selectedItem">
-                <h2>Edit Work Item</h2>
-
-                <div class="form-group">
-                    <label>Name</label>
-                    <input
-                        v-model="selectedItem.name"
-                        type="text"
-                        @focus="saveHistory"
-                    >
-                </div>
-
-                <div class="form-group">
-                    <label>Length (Grid Units)</label>
-                    <input
-                        v-model.number="selectedItem.widthUnits"
-                        type="number"
-                        min="1"
-                        step="1"
-                        @focus="saveHistory"
-                    >
-                    <small style="color: #888; display: block; margin-top: 4px;">
-                        Width in px: {{ selectedItem.widthUnits * 50 }}px
-                    </small>
-                </div>
-
-                <div class="form-group">
-                    <label>Color</label>
-                    <div
-                        class="color-palette"
-                        @mousedown="saveHistory"
+                        class="axis-content"
+                        :style="{ width: gridWidth + 'px' }"
                     >
                         <div
-                            v-for="color in colorPalette"
-                            :key="color"
-                            class="color-swatch"
-                            :class="{ active: selectedItem.color === color }"
-                            :style="{ backgroundColor: color }"
-                            @click="selectedItem.color = color"
-                        />
+                            v-for="(label, index) in axisLabels"
+                            :key="index"
+                            class="axis-cell"
+                            :title="String(label)"
+                        >
+                            {{ label }}
+                        </div>
                     </div>
                 </div>
             </div>
-            <div v-else>
-                <p style="color: #666; text-align: center; margin-top: 50px;">
-                    Select an item to edit
-                </p>
+
+            <div class="grid-body-row">
+                <!-- Row Headers -->
+                <div
+                    ref="rowHeader"
+                    class="row-header-container"
+                >
+                    <div 
+                        class="row-header-content"
+                        :style="{ height: gridHeight + 'px' }"
+                    >
+                        <div
+                            v-for="realRowIndex in visibleRowIndices"
+                            :key="realRowIndex"
+                            class="row-label-cell"
+                            :class="{ 'editing': editingRowIndex === realRowIndex }"
+                            :title="getRowName(realRowIndex)"
+                            @click="startEditRow(realRowIndex)"
+                        >
+                            <input
+                                v-if="editingRowIndex === realRowIndex"
+                                v-model="tempRowName"
+                                v-focus
+                                class="row-edit-input"
+                                @blur="saveEditRow"
+                                @keydown.enter="saveEditRow"
+                                @keydown.esc="cancelEditRow"
+                            >
+                            <span v-else>
+                                {{ getRowName(realRowIndex) }}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Board -->
+                <div
+                    ref="boardContainer"
+                    class="board-container"
+                    @scroll="handleScroll"
+                    @click.self="selectedItemIds.clear()"
+                >
+                    <div
+                        class="board-content"
+                        :style="{ 
+                            width: gridWidth + 'px', 
+                            height: gridHeight + 'px',
+                        }"
+                    >
+                        <!-- The Grid Background -->
+                        <!-- Clicking background deselects item -->
+                        <div
+                            class="grid-background"
+                            @click="selectedItemIds.clear()"
+                        />
+
+                        <!-- The Ghost Items (Multi-Drag) -->
+                        <div 
+                            v-if="isDragging && draggedGhosts.length > 0"
+                        >
+                            <template
+                                v-for="g in draggedGhosts"
+                                :key="'drag-ghost-' + g.id"
+                            >
+                                <div 
+                                    v-if="getVisualY(g.y) !== null"
+                                    class="ghost-item"
+                                    :style="{
+                                        transform: `translate(${g.x}px, ${getVisualY(g.y)}px)`,
+                                        width: `${g.widthUnits * CELL_SIZE}px`,
+                                        height: `${CELL_SIZE}px`,
+                                        borderColor: g.color || '#ccc',
+                                        backgroundColor: g.color || '#ccc'
+                                    }"
+                                />
+                            </template>
+                        </div>
+
+                        <!-- The Bump Mode Ghosts -->
+                        <div 
+                            v-if="isBumpMode && bumpGhosts.length > 0"
+                        >
+                            <template
+                                v-for="g in bumpGhosts"
+                                :key="'bump-ghost-' + g.id"
+                            >
+                                <div
+                                    v-if="bumpedItemIds.has(g.id) && getVisualY(g.y) !== null"
+                                    class="ghost-item bump-ghost-hatched"
+                                    style="z-index: 5; border-style: solid; display: flex; align-items: center; justify-content: center; overflow: hidden; white-space: nowrap; font-size: 0.85rem; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.5);"
+                                    :style="{
+                                        transform: `translate(${g.x}px, ${getVisualY(g.y)}px)`,
+                                        width: `${g.widthUnits * CELL_SIZE}px`,
+                                        height: `${CELL_SIZE}px`,
+                                        backgroundColor: g.color || '#ccc',
+                                        borderColor: 'rgba(0,0,0,0.5)'
+                                    }"
+                                >
+                                    {{ items.find(i => i.id === g.id)?.name }}
+                                </div>
+                            </template>
+                        </div>
+
+                        <!-- The Backfill Mode Ghosts -->
+                        <div 
+                            v-if="isBackfillMode && backfillGhosts.length > 0"
+                        >
+                            <template
+                                v-for="g in backfillGhosts"
+                                :key="'backfill-ghost-' + g.id"
+                            >
+                                <div
+                                    v-if="getVisualY(g.y) !== null"
+                                    class="ghost-item bump-ghost-hatched"
+                                    style="z-index: 5; border-style: solid; display: flex; align-items: center; justify-content: center; overflow: hidden; white-space: nowrap; font-size: 0.85rem; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.5);"
+                                    :style="{
+                                        transform: `translate(${g.x}px, ${getVisualY(g.y)}px)`,
+                                        width: `${g.widthUnits * CELL_SIZE}px`,
+                                        height: `${CELL_SIZE}px`,
+                                        backgroundColor: g.color || '#ccc',
+                                        borderColor: 'rgba(0,0,0,0.5)'
+                                    }"
+                                >
+                                    {{ items.find(i => i.id === g.id)?.name }}
+                                </div>
+                            </template>
+                        </div>
+
+                        <!-- The Draggable Items -->
+                        <div
+                            v-for="(item, index) in items"
+                            v-show="!bumpedItemIds.has(item.id)"
+                            :key="item.id"
+                            class="draggable-item"
+                            :class="{ selected: selectedItemIds.has(item.id) }"
+                            :style="getItemStyle(item, index)"
+                            @mousedown.stop="startDrag($event, index)"
+                        >
+                            <div>{{ item.name }}</div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -1092,8 +1076,6 @@ body {
 
 /* Bump Ghost HATCHED variant */
 .bump-ghost-hatched {
-    /* Using a repeating linear gradient to create diagonal stripes */
-    /* We used background-image to overlay on top of the background-color set inline */
     background-image: repeating-linear-gradient(
         45deg,
         rgba(255, 255, 255, 0.4),
@@ -1101,19 +1083,17 @@ body {
         transparent 10px,
         transparent 20px
     ) !important;
-    
-    /* Ensure the color beneath shows through */
     background-blend-mode: overlay;
-    
-    /* Strong dashed border */
     border: 2px dashed rgba(0,0,0,0.6) !important;
 }
 
 .app-layout {
     display: flex;
     flex-direction: row;
-    height: calc(100vh - 100px); /* Fill remaining usage */
+    height: calc(100vh - 100px); 
     border-top: 1px solid #ccc;
+    position: relative;
+    overflow: hidden;
 }
 
 button {
@@ -1121,13 +1101,50 @@ button {
     border: 1px solid #ccc;
     background: #fff;
     border-radius: 4px;
+    padding: 6px 12px;
+}
+
+.btn-icon {
+    border: none;
+    background: transparent;
+    font-size: 1.5rem; 
+    padding: 4px;
+}
+
+.btn-primary {
+    background: var(--primary);
+    color: white;
+    border: none;
+}
+.btn-primary:hover {
+    filter: brightness(0.9);
+}
+
+.btn-danger {
+    background: #ef4444;
+    color: white;
+    border: none;
+}
+.btn-danger:hover {
+    filter: brightness(0.9);
+}
+
+header {
+    background: #fff;
+    border-bottom: 1px solid #e5e7eb;
 }
 
 .header-row {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 0 20px;
+    padding: 10px 20px;
+}
+
+.header-row h1 {
+    margin: 0;
+    font-size: 1.25rem;
+    color: var(--dark);
 }
 
 .header-controls {
@@ -1135,66 +1152,116 @@ button {
     gap: 10px;
 }
 
-header {
+.toolbar-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 20px;
     background: var(--gray);
-    padding: 10px 0;
-    border-bottom: 1px solid #ddd;
+    border-top: 1px solid #f0f0f0;
 }
 
-header h1 {
-    margin: 0;
-    font-size: 1.5rem;
-}
-
-header p {
-    margin: 5px 20px 0;
-    color: #666;
+.instructions {
+    color: #6b7280;
     font-size: 0.9rem;
 }
 
-.stats {
-    padding: 5px 20px; 
-    font-family: 'Consolas', monospace; 
-    font-size: 0.9rem; 
-    color: #444;
-}
-
-/* Sidebar */
-.sidebar {
-    width: 300px;
-    background: #f9fafb;
-    border-left: 1px solid #ddd;
+.toolbar-actions {
     display: flex;
-    flex-direction: column;
-    padding: 20px;
-    overflow-y: auto;
-    flex-shrink: 0;
+    gap: 10px;
+    align-items: center;
 }
 
-.sidebar-section {
-    background: #fff;
-    border: 1px solid #e5e7eb;
-    border-radius: 6px;
-    padding: 15px;
-    margin-bottom: 20px;
+.separator {
+    width: 1px;
+    height: 24px;
+    background: #d1d5db;
+    margin: 0 4px;
 }
 
 /* Main Content Area */
 .main-content {
     flex: 1;
     position: relative;
-    overflow: hidden; /* Hide scrollbars of the container */
+    overflow: hidden;
     display: flex;
     flex-direction: column;
 }
 
-.axis-header {
+.grid-header-row {
+    display: flex;
+    flex-direction: row;
     height: 30px;
+    flex-shrink: 0;
+    width: 100%;
+    z-index: 20;
+}
+
+.corner-cell {
+    width: 150px;
+    height: 100%;
+    background: #e5e7eb;
+    border-bottom: 1px solid #ccc;
+    border-right: 1px solid #ccc;
+    flex-shrink: 0;
+}
+
+.grid-body-row {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+    padding-bottom: 20px; /* Space for horizontal scrollbar if needed */
+}
+
+.row-header-container {
+    width: 150px;
+    overflow: hidden; 
+    border-right: 1px solid #ccc;
+    background: #f9fafb;
+    flex-shrink: 0;
+}
+
+.row-label-cell {
+    height: 50px; 
+    width: 100%;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    box-sizing: border-box;
+    border-bottom: 1px solid #eee;
+    font-size: 0.85rem;
+    color: #444;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+}
+
+.row-label-cell:hover {
+    background-color: #f3f4f6;
+}
+
+.row-label-cell.editing {
+    padding: 0;
+}
+
+.row-edit-input {
+    width: 100%;
+    height: 100%;
+    border: 2px solid var(--primary);
+    padding: 0 8px;
+    font-size: 0.85rem;
+    outline: none;
+}
+
+.axis-header {
+    height: 100%;
+    flex: 1;
     background: #f0f0f0;
     border-bottom: 1px solid #ccc;
     position: relative;
-    overflow: hidden; /* Hide scrollbars */
-    flex-shrink: 0;
+    overflow: hidden; 
 }
 
 .axis-content {
@@ -1203,7 +1270,7 @@ header p {
 }
 
 .axis-cell {
-    width: 50px; /* CELL_SIZE */
+    width: 50px;
     height: 100%;
     border-right: 1px solid #ddd;
     display: flex;
@@ -1220,23 +1287,25 @@ header p {
 /* Board */
 .board-container {
     position: relative;
-    overflow: auto; /* Allow scrolling */
+    overflow: auto; 
     flex: 1;
-    background-color: #fff;
+    background-color: #f3f4f6; /* Outer gray bg */
     width: 100%;
 }
 
+/* Ensure the white content box sizes to the grid exactly */
 .board-content {
     position: relative;
     background-color: #fff;
+    /* width/height set inline dynamically */
 }
 
 .grid-background {
     width: 100%;
     height: 100%;
     background-image: 
-        linear-gradient(to right, #ccc 1px, transparent 1px),
-        linear-gradient(to bottom, #ccc 1px, transparent 1px);
+        linear-gradient(to right, #e5e7eb 1px, transparent 1px),
+        linear-gradient(to bottom, #e5e7eb 1px, transparent 1px);
     background-size: 50px 50px;
     position: absolute;
     top: 0;
@@ -1248,117 +1317,33 @@ header p {
     position: absolute;
     box-sizing: border-box;
     border: 1px solid rgba(0,0,0,0.2);
-    border-radius: 4px;
-    cursor: move;
-    font-size: 0.85rem;
-    color: #fff;
     display: flex;
     align-items: center;
-    justify-content: center;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
     padding: 0 5px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    font-size: 0.85rem;
+    color: #fff;
+    overflow: hidden;
+    white-space: nowrap;
+    cursor: grab;
     user-select: none;
-    transition: transform 0.1s;
+    z-index: 10;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+    border-radius: 4px;
 }
 
 .draggable-item.selected {
-    box-shadow: 0 0 0 2px #2563eb, 0 4px 6px rgba(0,0,0,0.2);
-    z-index: 10;
+    outline: 2px solid #3b82f6 !important;
+    outline-offset: 1px;
+    z-index: 20; 
 }
 
 .ghost-item {
     position: absolute;
     box-sizing: border-box;
-    border: 2px dashed #999;
-    border-radius: 4px;
-    pointer-events: none;
+    border: 2px dashed #9ca3af;
+    background-color: rgba(229, 231, 235, 0.5);
     z-index: 5;
-    opacity: 0.6;
-}
-
-/* Forms */
-.form-group {
-    margin-bottom: 15px;
-}
-
-.form-group label {
-    display: block;
-    margin-bottom: 5px;
-    font-weight: 500;
-}
-
-.form-group input {
-    width: 100%;
-    padding: 8px;
-    border: 1px solid #d1d5db;
+    pointer-events: none;
     border-radius: 4px;
-    box-sizing: border-box;
-}
-
-.color-options {
-    display: flex;
-    gap: 5px;
-    flex-wrap: wrap;
-}
-
-.color-swatch {
-    width: 25px;
-    height: 25px;
-    border-radius: 50%;
-    cursor: pointer;
-    border: 2px solid transparent;
-}
-
-.color-swatch.active {
-    border-color: #333;
-}
-
-.btn {
-    display: block;
-    width: 100%;
-    padding: 10px;
-    background: var(--primary);
-    color: white;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    text-align: center;
-    font-weight: 500;
-}
-
-.btn:hover {
-    opacity: 0.9;
-}
-
-.btn-primary {
-    background: var(--primary);
-    color: white;
-    border: none;
-    padding: 5px 15px;
-    border-radius: 4px;
-    font-weight: 500;
-}
-
-.btn-secondary {
-    background: #fff;
-    color: #374151;
-    border: 1px solid #d1d5db;
-    padding: 5px 15px;
-    border-radius: 4px;
-    font-weight: 500;
-}
-
-.btn-small {
-    padding: 4px 10px;
-    font-size: 0.8rem;
-}
-
-.btn-group {
-    display: flex;
-    gap: 10px;
-    margin-top: 10px;
 }
 </style>
