@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
 import { formatDate, parseLocalYMD } from './utils/dates';
-import { checkCollision, findClosestValidPosition, resolveBumps, type PhysicsItem } from './utils/physics';
+import { checkCollision, findClosestValidPosition, resolveBumps, resolveBackfill, calculateLayoutOutcome, type PhysicsItem } from './utils/physics';
 import { generateColorPalette } from './utils/colors'; 
 import TaskListModal from './components/TaskListModal.vue';
 
@@ -125,7 +125,9 @@ const handleScroll = () => {
 
 const isDragging = ref(false);
 const isBumpMode = ref(false);
+const isBackfillMode = ref(false);
 const bumpGhosts = ref<PhysicsItem[]>([]); 
+const backfillGhosts = ref<PhysicsItem[]>([]); 
 
 const startX = ref(0);
 const startY = ref(0);
@@ -187,6 +189,8 @@ const ghost = reactive({
 
 const bumpedItemIds = computed(() => {
     const ids = new Set<string | number>();
+
+    // Bump Mode logic
     if (isBumpMode.value && bumpGhosts.value.length > 0) {
         bumpGhosts.value.forEach(g => {
             // New logic: Only hide the item if it has MOVED from its original position
@@ -204,6 +208,19 @@ const bumpedItemIds = computed(() => {
             }
         });
     }
+
+    // Backfill Mode logic
+    if (isBackfillMode.value && backfillGhosts.value.length > 0) {
+        backfillGhosts.value.forEach(g => {
+             // For backfill, we definitely hide the item at its old position so we can show the ghost at the new one
+             // (Unless it's the dragged item itself, which is handled separately)
+             if (draggingItemIndex.value !== null && items[draggingItemIndex.value].id === g.id) {
+                return;
+            }
+             ids.add(g.id);
+        });
+    }
+
     return ids;
 });
 
@@ -316,6 +333,10 @@ const toggleBumpMode = () => {
 };
 
 const updateGhost = () => {
+    backfillGhosts.value = []; 
+    // We will use bumpGhosts as the unified list of "Simulated World Items" 
+    // whether they are bumped, backfilled, or stationary.
+
     const index = draggingItemIndex.value;
     if (index === null) return;
     
@@ -337,110 +358,129 @@ const updateGhost = () => {
     }
     snappedPosY = Math.min(snappedPosY, gridHeight.value - CELL_SIZE);
 
-    if (isBumpMode.value) {
-        // --- Bump Mode Logic ---
-        const candidate = { 
-            id: item.id, 
-            x: snappedPosX, 
-            y: snappedPosY, 
-            widthUnits: item.widthUnits 
-        };
-        
-        // Resolve bumps returns ALL items (including candidate) at new positions
-        const resolved = resolveBumps(candidate, items, CELL_SIZE);
-        bumpGhosts.value = resolved;
-        
-        // Check grid expansion
-        let maxRight = 0;
-        resolved.forEach(p => {
-            const r = p.x + (p.widthUnits * CELL_SIZE);
-            if (r > maxRight) maxRight = r;
-        });
-        
-        if (maxRight > gridWidth.value) {
-            gridConfig.cols = Math.ceil(maxRight / CELL_SIZE);
+    // --- Unified Layout Calculation ---
+    const outcome = calculateLayoutOutcome(
+        item.id,
+        snappedPosX,
+        snappedPosY,
+        items,
+        CELL_SIZE,
+        {
+            isBackfillMode: isBackfillMode.value,
+            isBumpMode: isBumpMode.value,
+            gridWidth: gridWidth.value,
+            gridHeight: gridHeight.value,
         }
+    );
 
-        // --- Show Standard Ghost for the Dragged Item ---
-        // We find the resolved position of the CANDIDATE (the dragged item) in the bump results
-        const resolvedCandidate = resolved.find(i => i.id === item.id);
-        if (resolvedCandidate) {
-            ghost.x = resolvedCandidate.x;
-            ghost.y = resolvedCandidate.y;
-            ghost.visible = true; // Show it!
-            ghost.width = resolvedCandidate.widthUnits * CELL_SIZE;
-            ghost.height = CELL_SIZE;
-            ghost.color = item.color || '#ccc';
-        }
+    // 1. Update the Main Ghost (The Dragged Item)
+    const draggedGhost = outcome.draggedItem;
+    ghost.x = draggedGhost.x;
+    ghost.y = draggedGhost.y;
+    ghost.width = draggedGhost.widthUnits * CELL_SIZE;
+    ghost.height = CELL_SIZE;
+    ghost.color = item.color || '#ccc';
+    ghost.visible = true;
 
-    } else {
-        // --- Standard Logic ---
-        bumpGhosts.value = [];
-        const itemPxWidth = item.widthUnits * CELL_SIZE;
+    // 2. Update the "Environmental" Ghosts (Bumps / Backfills)
+    // bumpedItemIds will automatically filter this list to show only changed items
+    bumpGhosts.value = outcome.items;
 
-        const candidate = { 
-            id: item.id, 
-            x: snappedPosX, 
-            y: snappedPosY, 
-            widthUnits: item.widthUnits 
-        };
-
-        // Pass CELL_SIZE
-        const isCollision = checkCollision(candidate, items, CELL_SIZE);
-
-        if (isCollision) {
-            // Pass all required params
-            const closestValid = findClosestValidPosition(
-                item.id, 
-                items, 
-                snappedPosX, 
-                snappedPosY, 
-                item.widthUnits, 
-                CELL_SIZE,
-                gridWidth.value,
-                gridHeight.value
-            );
-            ghost.x = closestValid.x;
-            ghost.y = closestValid.y;
-        } else {
-            ghost.x = snappedPosX;
-            ghost.y = snappedPosY;
-        }
-
-        ghost.width = itemPxWidth;
-        ghost.height = CELL_SIZE;
-        ghost.color = item.color || '#ccc';
-        ghost.visible = true;
+    // Check grid expansion from the outcome
+    let maxRight = 0;
+    // Include the ghost itself
+    maxRight = Math.max(maxRight, ghost.x + ghost.width);
+    
+    outcome.items.forEach(p => {
+        const r = p.x + (p.widthUnits * CELL_SIZE);
+        if (r > maxRight) maxRight = r;
+    });
+    
+    if (maxRight > gridWidth.value) {
+        gridConfig.cols = Math.ceil(maxRight / CELL_SIZE);
     }
 };
 
 const stopDrag = () => {
     if (!isDragging.value) return;
     
+    // Recalculate everything one last time to ensure consistency with what was shown
+    // or just trust the ghosts?
+    // Safer to recalculate using the exact logic, as updateGhost depends on mousemove
+    
     const index = draggingItemIndex.value;
     if (index !== null) {
         const item = items[index];
 
-        if (isBumpMode.value && bumpGhosts.value.length > 0) {
-            // Commit Bumps
-            saveHistory();
-            
-            // Map bumpGhosts back to items
-            // We need to match IDs
-            for (const g of bumpGhosts.value) {
-                const realItem = items.find(i => i.id === g.id);
-                if (realItem) {
-                    realItem.x = g.x;
-                    realItem.y = g.y;
-                }
+        // We use the same 'snapped' logic as updateGhost to determine target
+        // (Copied logic to ensure match)
+        let finalRawX = item.x + dragOffset.value.x;
+        let finalRawY = item.y + dragOffset.value.y;
+        let snappedPosX = Math.round(finalRawX / CELL_SIZE) * CELL_SIZE;
+        let snappedPosY = Math.round(finalRawY / CELL_SIZE) * CELL_SIZE;
+        snappedPosX = Math.max(0, snappedPosX);
+        snappedPosY = Math.max(0, snappedPosY);
+        if (!isBumpMode.value) {
+            const itemPxWidth = item.widthUnits * CELL_SIZE;
+            snappedPosX = Math.min(snappedPosX, gridWidth.value - itemPxWidth);
+        }
+        snappedPosY = Math.min(snappedPosY, gridHeight.value - CELL_SIZE);
+
+        // Check if we actually moved visuals? 
+        // Logic: if ghost is visible, we commit to GHOST position.
+        // But calculateLayoutOutcome returns the valid position.
+        
+        // Let's run the calc.
+        const outcome = calculateLayoutOutcome(
+            item.id,
+            snappedPosX,
+            snappedPosY,
+            items,
+            CELL_SIZE,
+            {
+                isBackfillMode: isBackfillMode.value,
+                isBumpMode: isBumpMode.value,
+                gridWidth: gridWidth.value,
+                gridHeight: gridHeight.value,
             }
-        } else if (ghost.visible) {
-            if (item.x !== ghost.x || item.y !== ghost.y) {
-                saveHistory();
+        );
+
+        if (outcome.isValid) {
+            // Apply changes
+            // Detect if anything changed to save history
+            let changed = false;
+
+            // 1. Dragged Item
+            if (item.x !== outcome.draggedItem.x || item.y !== outcome.draggedItem.y) {
+                changed = true;
             }
 
-            item.x = ghost.x;
-            item.y = ghost.y;
+            // 2. Others (Bumps / Backfills)
+            outcome.items.forEach(newItemState => {
+                const realItem = items.find(i => i.id === newItemState.id);
+                if (realItem) {
+                    if (realItem.x !== newItemState.x || realItem.y !== newItemState.y) {
+                        changed = true;
+                    }
+                }
+            });
+
+            if (changed) {
+                saveHistory();
+                
+                // Commit Dragged Item
+                item.x = outcome.draggedItem.x;
+                item.y = outcome.draggedItem.y;
+
+                // Commit Others
+                outcome.items.forEach(newItemState => {
+                    const realItem = items.find(i => i.id === newItemState.id);
+                    if (realItem) {
+                        realItem.x = newItemState.x;
+                        realItem.y = newItemState.y;
+                    }
+                });
+            }
         }
     }
 
@@ -448,7 +488,8 @@ const stopDrag = () => {
     draggingItemIndex.value = null;
     dragOffset.value = { x: 0, y: 0 };
     ghost.visible = false;
-    bumpGhosts.value = []; // Clear bumps
+    bumpGhosts.value = []; 
+    backfillGhosts.value = [];
 
     window.removeEventListener('mousemove', onDrag);
     window.removeEventListener('mouseup', stopDrag);
@@ -602,6 +643,14 @@ onUnmounted(() => {
             >
                 Bump Mode: {{ isBumpMode ? 'ON' : 'OFF' }}
             </button>
+            <button
+                class="btn-secondary"
+                style="margin-left: 10px; font-weight: bold;"
+                :style="{ color: isBackfillMode ? 'blue' : 'gray' }"
+                @click="isBackfillMode = !isBackfillMode"
+            >
+                Backfill: {{ isBackfillMode ? 'ON' : 'OFF' }}
+            </button>
         </div>
     </header>
 
@@ -671,6 +720,30 @@ onUnmounted(() => {
                         >
                             <div
                                 v-if="bumpedItemIds.has(g.id)"
+                                class="ghost-item bump-ghost-hatched"
+                                style="z-index: 5; border-style: solid; display: flex; align-items: center; justify-content: center; overflow: hidden; white-space: nowrap; font-size: 0.85rem; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.5);"
+                                :style="{
+                                    transform: `translate(${g.x}px, ${g.y}px)`,
+                                    width: `${g.widthUnits * CELL_SIZE}px`,
+                                    height: `${CELL_SIZE}px`,
+                                    backgroundColor: g.color || '#ccc',
+                                    borderColor: 'rgba(0,0,0,0.5)'
+                                }"
+                            >
+                                {{ items.find(i => i.id === g.id)?.name }}
+                            </div>
+                        </template>
+                    </div>
+
+                    <!-- The Backfill Mode Ghosts -->
+                     <div 
+                        v-if="isBackfillMode && backfillGhosts.length > 0"
+                    >
+                        <template
+                            v-for="g in backfillGhosts"
+                            :key="'backfill-ghost-' + g.id"
+                        >
+                            <div
                                 class="ghost-item bump-ghost-hatched"
                                 style="z-index: 5; border-style: solid; display: flex; align-items: center; justify-content: center; overflow: hidden; white-space: nowrap; font-size: 0.85rem; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.5);"
                                 :style="{

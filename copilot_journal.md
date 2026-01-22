@@ -1,5 +1,37 @@
 # Copilot Journal
 
+This file tracks the evolution of the project. Copilot should update this file after completing significant tasks.
+
+## Format
+* **Goal**: [Brief description of the objective]
+* **Files Modified**: [List of key files changed] (Optional)
+* **Approach**: [Technical details of implementation]
+* **Outcome**: [Result and verification status]
+
+---
+
+## 2026-01-22 10:00
+* **Goal**: Fix Backfill & Bump Interaction and Visualization (Unified Physics).
+* **Files Modified**: `src/utils/physics.ts`, `src/App.vue`, `src/utils/physics.layout.test.ts`
+* **Approach**:
+    * Created `calculateLayoutOutcome` in `physics.ts` to pipeline Backfill -> Collision/Bump.
+    * Updated `resolveBumps` to handle center-aligned overlap correctly.
+    * Updated `App.vue` to use `calculateLayoutOutcome` for both ghost previews (visuals) and final drop logic (`stopDrag`).
+    * Added `physics.layout.test.ts` to verify complex interactions (Backfilling then moving into the vacated spot).
+* **Outcome**: 
+    * Unified physics engine allows seamless mixing of Bump and Backfill modes.
+    * Visuals accurately reflect the final state during drag.
+    * All 37 tests passed.
+
+## 2026-01-22 09:30
+* **Goal**: Implement "Backfill Mode" where moving an item allows adjacent items to slide left and fill the void.
+* **Approach**:
+    * Implemented `resolveBackfill` in `utils/physics.ts` (Chain-shift logic).
+    * Added `src/utils/physics.backfill.test.ts` to verify behavior.
+    * Added "Backfill" toggle in `App.vue` header.
+    * Integrated backfill trigger in `stopDrag`.
+* **Outcome**: Verified that right-adjacent chains effectively slide left to close gaps when backfill is enabled.
+
 ## 2026-01-22 09:05
 * **Goal**: Establish a regression testing suite and improve quality assurance process.
 * **Files Modified**: `src/App.test.ts`, `eslint.config.js`, `src/vite-env.d.ts`, `package.json`, `src/components/TaskListModal.vue`
@@ -30,7 +62,7 @@
 * **Goal**: Fix Grid rendering issue (grid was invisible/collapsed).
 * **Approach**: 
     * Separated "Viewport" (Scrollable container) from "Content" (Sized div) in `App.vue`.
-    * darkened grid lines from `#eee` to `#ccc`.
+    * Darkened grid lines from `#eee` to `#ccc`.
     * Explicitly set `z-index: 0` on grid background.
 * **Outcome**: Grid is now visible and scrolls correctly; Headers stay in sync.
 

@@ -150,7 +150,7 @@ export const resolveBumps = (
                 let newX = connection.x;
                 
                 // If bumper is to the left, push connection RIGHT
-                if (bumperCenter < connectionCenter) {
+                if (bumperCenter <= connectionCenter) {
                     newX = bumperRight;
                 } else {
                     // Push LEFT
@@ -177,3 +177,156 @@ export const resolveBumps = (
 
     return Array.from(currentItems.values());
 };
+
+/**
+ * Resolves backfill by sliding right-adjacent items to the left to fill the gap.
+ * Finds the contiguous chain of items immediately to the right of the gap and shifts them left.
+ */
+export const resolveBackfill = (
+    gapX: number,
+    gapY: number,
+    gapWidthUnits: number,
+    allItems: PhysicsItem[],
+    cellSize: number
+): PhysicsItem[] => {
+    // Clone items
+    const currentItems = allItems.map(i => ({ ...i }));
+
+    const gapRightEdge = gapX + (gapWidthUnits * cellSize);
+    const shiftAmount = gapWidthUnits * cellSize;
+
+    // 1. Find all items in the same row to the right
+    const rowItems = currentItems
+        .filter(i => Math.abs(i.y - gapY) < 1 && i.x >= gapRightEdge - 1) // Tolerance
+        .sort((a, b) => a.x - b.x);
+
+    // 2. Identify the contiguous chain starting EXACTLY at gapRightEdge
+    const chain: PhysicsItem[] = [];
+    let currentValidStart = gapRightEdge;
+
+    for (const item of rowItems) {
+        // allowing a tiny epsilon for float comparisons
+        if (Math.abs(item.x - currentValidStart) < 2) { 
+            chain.push(item);
+            currentValidStart += (item.widthUnits * cellSize);
+        } else {
+            // Gap detected in the chain, stop
+            break;
+        }
+    }
+
+    // 3. Shift the chain left
+    chain.forEach(item => {
+        item.x -= shiftAmount;
+    });
+
+    return currentItems;
+};
+
+export interface LayoutOutcome {
+    items: PhysicsItem[];
+    isValid: boolean;
+    draggedItem: PhysicsItem;
+}
+
+export const calculateLayoutOutcome = (
+    draggedItemId: number | string,
+    targetX: number,
+    targetY: number,
+    allItems: PhysicsItem[],
+    cellSize: number,
+    options: {
+        isBackfillMode: boolean;
+        isBumpMode: boolean;
+        gridWidth: number;
+        gridHeight: number;
+    }
+): LayoutOutcome => {
+    // 1. Identify Dragged Item & Original Position
+    const originalDraggedItem = allItems.find(i => i.id === draggedItemId);
+    // If not found, return original state
+    if (!originalDraggedItem) {
+        return { items: allItems.map(i => ({...i})), isValid: false, draggedItem: { id: -1, x:0, y:0, widthUnits:0 } };
+    }
+
+    // 2. Build the "World" without the dragged item (Candidates for backfill/collision)
+    // clone all except dragged
+    let worldState = allItems
+        .filter(i => i.id !== draggedItemId)
+        .map(i => ({ ...i }));
+
+    // 3. Apply BACKFILL to the world state first
+    if (options.isBackfillMode) {
+        // The gap was created at originalDraggedItem.x/y
+        worldState = resolveBackfill(
+            originalDraggedItem.x,
+            originalDraggedItem.y,
+            originalDraggedItem.widthUnits,
+            worldState,
+            cellSize
+        );
+    }
+
+    // 4. Position the Dragged Item at the Target (Candidate)
+    const candidateArg = {
+        id: originalDraggedItem.id,
+        x: targetX,
+        y: targetY,
+        widthUnits: originalDraggedItem.widthUnits,
+        // copy extra props if any
+        name: originalDraggedItem.name,
+        color: originalDraggedItem.color
+    };
+
+    let finalizedItems: PhysicsItem[] = [];
+    let isValid = true;
+
+    // 5. Apply BUMP or Collision Check
+    if (options.isBumpMode) {
+        // Resolve Bumps interacts the candidate against the (possibly backfilled) world
+        // resolveBumps returns the full list including candidate
+        // Note: resolveBumps signature: (candidate, existingItems, cellSize)
+        // ensure existingItems doesn't contain candidate (it doesn't, we filtered it)
+        finalizedItems = resolveBumps(candidateArg, worldState, cellSize);
+    } else {
+        // Standard Check
+        if (checkCollision(candidateArg, worldState, cellSize)) {
+            // Collision!
+            // Try to find closest valid? 
+            // In the "ghosting" UI we usually snap to closest valid.
+            // But here "calculateLayoutOutcome" might just report validity.
+            // However, the test expects resolved positions.
+            // Let's use finding logic or mark as invalid?
+            
+            // To mimic App.vue's "ghost" behavior, we find closest valid position.
+            const validPos = findClosestValidPosition(
+                draggedItemId,
+                worldState,
+                targetX,
+                targetY,
+                originalDraggedItem.widthUnits,
+                cellSize,
+                options.gridWidth,
+                options.gridHeight
+            );
+            
+            candidateArg.x = validPos.x;
+            candidateArg.y = validPos.y;
+            
+            // We still need to reconstruct the full list
+            finalizedItems = [...worldState, candidateArg];
+            
+            // If the pos changed significantly from target, is it "valid"? 
+            // Usually yes, it's just snapped.
+        } else {
+            finalizedItems = [...worldState, candidateArg];
+        }
+    }
+
+    return {
+        items: finalizedItems,
+        isValid: true,
+        draggedItem: candidateArg // The final position of the dragged item
+    };
+};
+
