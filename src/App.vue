@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
 import { formatDate, parseLocalYMD } from './utils/dates';
-import { checkCollision, findClosestValidPosition, type PhysicsItem } from './utils/physics';
+import { checkCollision, findClosestValidPosition, resolveBumps, type PhysicsItem } from './utils/physics';
 import { generateColorPalette } from './utils/colors'; 
 import TaskListModal from './components/TaskListModal.vue';
 
@@ -114,7 +114,19 @@ const cancelGridEditor = () => {
 };
 
 // --- State ---
+const boardContainer = ref<HTMLElement | null>(null);
+const axisHeader = ref<HTMLElement | null>(null);
+
+const handleScroll = () => {
+    if (boardContainer.value && axisHeader.value) {
+        axisHeader.value.scrollLeft = boardContainer.value.scrollLeft;
+    }
+};
+
 const isDragging = ref(false);
+const isBumpMode = ref(false);
+const bumpGhosts = ref<PhysicsItem[]>([]); 
+
 const startX = ref(0);
 const startY = ref(0);
 
@@ -171,6 +183,28 @@ const ghost = reactive({
     height: 0,
     color: 'transparent',
     visible: false
+});
+
+const bumpedItemIds = computed(() => {
+    const ids = new Set<string | number>();
+    if (isBumpMode.value && bumpGhosts.value.length > 0) {
+        bumpGhosts.value.forEach(g => {
+            // New logic: Only hide the item if it has MOVED from its original position
+            // AND it's not the currently dragged item (dragged item is handled by main render loop)
+            
+            if (draggingItemIndex.value !== null && items[draggingItemIndex.value].id === g.id) {
+                return;
+            }
+
+            const original = items.find(i => i.id === g.id);
+            if (original) {
+                if (original.x !== g.x || original.y !== g.y) {
+                    ids.add(g.id);
+                }
+            }
+        });
+    }
+    return ids;
 });
 
 // --- History / Undo ---
@@ -276,6 +310,11 @@ const onDrag = (event: MouseEvent) => {
     updateGhost(); 
 };
 
+const toggleBumpMode = () => {
+    isBumpMode.value = !isBumpMode.value;
+    bumpGhosts.value = [];
+};
+
 const updateGhost = () => {
     const index = draggingItemIndex.value;
     if (index === null) return;
@@ -291,43 +330,88 @@ const updateGhost = () => {
     snappedPosX = Math.max(0, snappedPosX);
     snappedPosY = Math.max(0, snappedPosY);
     
-    const itemPxWidth = item.widthUnits * CELL_SIZE;
-    snappedPosX = Math.min(snappedPosX, gridWidth.value - itemPxWidth);
+    // In Bump Mode, we allow unlimited expansion to the right
+    if (!isBumpMode.value) {
+        const itemPxWidth = item.widthUnits * CELL_SIZE;
+        snappedPosX = Math.min(snappedPosX, gridWidth.value - itemPxWidth);
+    }
     snappedPosY = Math.min(snappedPosY, gridHeight.value - CELL_SIZE);
 
-    const candidate = { 
-        id: item.id, 
-        x: snappedPosX, 
-        y: snappedPosY, 
-        widthUnits: item.widthUnits 
-    };
+    if (isBumpMode.value) {
+        // --- Bump Mode Logic ---
+        const candidate = { 
+            id: item.id, 
+            x: snappedPosX, 
+            y: snappedPosY, 
+            widthUnits: item.widthUnits 
+        };
+        
+        // Resolve bumps returns ALL items (including candidate) at new positions
+        const resolved = resolveBumps(candidate, items, CELL_SIZE);
+        bumpGhosts.value = resolved;
+        
+        // Check grid expansion
+        let maxRight = 0;
+        resolved.forEach(p => {
+            const r = p.x + (p.widthUnits * CELL_SIZE);
+            if (r > maxRight) maxRight = r;
+        });
+        
+        if (maxRight > gridWidth.value) {
+            gridConfig.cols = Math.ceil(maxRight / CELL_SIZE);
+        }
 
-    // Pass CELL_SIZE
-    const isCollision = checkCollision(candidate, items, CELL_SIZE);
+        // --- Show Standard Ghost for the Dragged Item ---
+        // We find the resolved position of the CANDIDATE (the dragged item) in the bump results
+        const resolvedCandidate = resolved.find(i => i.id === item.id);
+        if (resolvedCandidate) {
+            ghost.x = resolvedCandidate.x;
+            ghost.y = resolvedCandidate.y;
+            ghost.visible = true; // Show it!
+            ghost.width = resolvedCandidate.widthUnits * CELL_SIZE;
+            ghost.height = CELL_SIZE;
+            ghost.color = item.color || '#ccc';
+        }
 
-    if (isCollision) {
-        // Pass all required params
-        const closestValid = findClosestValidPosition(
-            item.id, 
-            items, 
-            snappedPosX, 
-            snappedPosY, 
-            item.widthUnits, 
-            CELL_SIZE,
-            gridWidth.value,
-            gridHeight.value
-        );
-        ghost.x = closestValid.x;
-        ghost.y = closestValid.y;
     } else {
-        ghost.x = snappedPosX;
-        ghost.y = snappedPosY;
-    }
+        // --- Standard Logic ---
+        bumpGhosts.value = [];
+        const itemPxWidth = item.widthUnits * CELL_SIZE;
 
-    ghost.width = itemPxWidth;
-    ghost.height = CELL_SIZE;
-    ghost.color = item.color || '#ccc';
-    ghost.visible = true;
+        const candidate = { 
+            id: item.id, 
+            x: snappedPosX, 
+            y: snappedPosY, 
+            widthUnits: item.widthUnits 
+        };
+
+        // Pass CELL_SIZE
+        const isCollision = checkCollision(candidate, items, CELL_SIZE);
+
+        if (isCollision) {
+            // Pass all required params
+            const closestValid = findClosestValidPosition(
+                item.id, 
+                items, 
+                snappedPosX, 
+                snappedPosY, 
+                item.widthUnits, 
+                CELL_SIZE,
+                gridWidth.value,
+                gridHeight.value
+            );
+            ghost.x = closestValid.x;
+            ghost.y = closestValid.y;
+        } else {
+            ghost.x = snappedPosX;
+            ghost.y = snappedPosY;
+        }
+
+        ghost.width = itemPxWidth;
+        ghost.height = CELL_SIZE;
+        ghost.color = item.color || '#ccc';
+        ghost.visible = true;
+    }
 };
 
 const stopDrag = () => {
@@ -337,7 +421,20 @@ const stopDrag = () => {
     if (index !== null) {
         const item = items[index];
 
-        if (ghost.visible) {
+        if (isBumpMode.value && bumpGhosts.value.length > 0) {
+            // Commit Bumps
+            saveHistory();
+            
+            // Map bumpGhosts back to items
+            // We need to match IDs
+            for (const g of bumpGhosts.value) {
+                const realItem = items.find(i => i.id === g.id);
+                if (realItem) {
+                    realItem.x = g.x;
+                    realItem.y = g.y;
+                }
+            }
+        } else if (ghost.visible) {
             if (item.x !== ghost.x || item.y !== ghost.y) {
                 saveHistory();
             }
@@ -351,6 +448,7 @@ const stopDrag = () => {
     draggingItemIndex.value = null;
     dragOffset.value = { x: 0, y: 0 };
     ghost.visible = false;
+    bumpGhosts.value = []; // Clear bumps
 
     window.removeEventListener('mousemove', onDrag);
     window.removeEventListener('mouseup', stopDrag);
@@ -441,6 +539,8 @@ const isListModalOpen = ref(false);
 
 onMounted(() => {
     window.addEventListener('keydown', handleKeydown);
+    console.log('Grid Config:', gridConfig);
+    console.log('Grid Sizes:', gridWidth.value, gridHeight.value);
 });
 
 onUnmounted(() => {
@@ -494,6 +594,14 @@ onUnmounted(() => {
         <p>Drag the rectangle. Click to edit its properties.</p>
         <div class="stats">
             Grid: X: {{ snappedX }} / Y: {{ snappedY }} | Items: {{ items.length }}
+            <button
+                class="btn-secondary"
+                style="margin-left: 20px; font-weight: bold;"
+                :style="{ color: isBumpMode ? 'green' : 'red' }"
+                @click="toggleBumpMode"
+            >
+                Bump Mode: {{ isBumpMode ? 'ON' : 'OFF' }}
+            </button>
         </div>
     </header>
 
@@ -502,55 +610,94 @@ onUnmounted(() => {
         <div class="main-content">
             <!-- Sticky Header -->
             <div
+                ref="axisHeader"
                 class="axis-header"
-                :style="{ width: gridWidth + 'px' }"
             >
-                <div
-                    v-for="(label, index) in axisLabels"
-                    :key="index"
-                    class="axis-cell"
-                    :title="String(label)"
+                <div 
+                    class="axis-content"
+                    :style="{ width: gridWidth + 'px' }"
                 >
-                    {{ label }}
+                    <div
+                        v-for="(label, index) in axisLabels"
+                        :key="index"
+                        class="axis-cell"
+                        :title="String(label)"
+                    >
+                        {{ label }}
+                    </div>
                 </div>
             </div>
 
             <!-- Board -->
             <div
+                ref="boardContainer"
                 class="board-container"
-                :style="{ width: gridWidth + 'px', height: gridHeight + 'px' }"
+                @scroll="handleScroll"
                 @click.self="selectedItemId = null"
             >
-                <!-- The Grid Background -->
-                <!-- Clicking background deselects item -->
                 <div
-                    class="grid-background"
-                    @click="selectedItemId = null"
-                />
-
-                <!-- The Ghost Item -->
-                <div 
-                    v-if="isDragging && ghost.visible"
-                    class="ghost-item"
-                    :style="{
-                        transform: `translate(${ghost.x}px, ${ghost.y}px)`,
-                        width: `${ghost.width}px`,
-                        height: `${ghost.height}px`,
-                        borderColor: ghost.color,
-                        backgroundColor: ghost.color
-                    }"
-                />
-
-                <!-- The Draggable Items -->
-                <div
-                    v-for="(item, index) in items"
-                    :key="item.id"
-                    class="draggable-item"
-                    :class="{ selected: selectedItemId === item.id }"
-                    :style="getItemStyle(item, index)"
-                    @mousedown.stop="startDrag($event, index)"
+                    class="board-content"
+                    :style="{ width: gridWidth + 'px', height: gridHeight + 'px' }"
                 >
-                    <div>{{ item.name }}</div>
+                    <!-- The Grid Background -->
+                    <!-- Clicking background deselects item -->
+                    <div
+                        class="grid-background"
+                        @click="selectedItemId = null"
+                    />
+
+                    <!-- The Ghost Item -->
+                    <div 
+                        v-if="isDragging && ghost.visible"
+                        class="ghost-item"
+                        :style="{
+                            transform: `translate(${ghost.x}px, ${ghost.y}px)`,
+                            width: `${ghost.width}px`,
+                            height: `${ghost.height}px`,
+                            borderColor: ghost.color,
+                            backgroundColor: ghost.color
+                        }"
+                    />
+
+                    <!-- The Bump Mode Ghosts -->
+                    <div 
+                        v-if="isBumpMode && bumpGhosts.length > 0"
+                    >
+                        <!-- We only show ghosts for items that are actually bumped (id in bumpedItemIds) OR the candidate ghost -->
+                        <!-- Actually, the candidate ghost logic is separate. -->
+                        <template
+                            v-for="g in bumpGhosts"
+                            :key="'bump-ghost-' + g.id"
+                        >
+                            <div
+                                v-if="bumpedItemIds.has(g.id)"
+                                class="ghost-item bump-ghost-hatched"
+                                style="z-index: 5; border-style: solid; display: flex; align-items: center; justify-content: center; overflow: hidden; white-space: nowrap; font-size: 0.85rem; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.5);"
+                                :style="{
+                                    transform: `translate(${g.x}px, ${g.y}px)`,
+                                    width: `${g.widthUnits * CELL_SIZE}px`,
+                                    height: `${CELL_SIZE}px`,
+                                    backgroundColor: g.color || '#ccc',
+                                    borderColor: 'rgba(0,0,0,0.5)'
+                                }"
+                            >
+                                {{ items.find(i => i.id === g.id)?.name }}
+                            </div>
+                        </template>
+                    </div>
+
+                    <!-- The Draggable Items -->
+                    <div
+                        v-for="(item, index) in items"
+                        v-show="!bumpedItemIds.has(item.id)"
+                        :key="item.id"
+                        class="draggable-item"
+                        :class="{ selected: selectedItemId === item.id }"
+                        :style="getItemStyle(item, index)"
+                        @mousedown.stop="startDrag($event, index)"
+                    >
+                        <div>{{ item.name }}</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -728,3 +875,290 @@ onUnmounted(() => {
         </div>
     </div>
 </template>
+
+<style>
+/* Basic Global Resets */
+:root {
+  --primary: #3b82f6; 
+  --gray: #f3f4f6;
+  --dark: #1f2937;
+}
+
+body {
+  margin: 0;
+  font-family: 'Segoe UI', sans-serif;
+  color: #333;
+}
+
+/* Bump Ghost HATCHED variant */
+.bump-ghost-hatched {
+    /* Using a repeating linear gradient to create diagonal stripes */
+    /* We used background-image to overlay on top of the background-color set inline */
+    background-image: repeating-linear-gradient(
+        45deg,
+        rgba(255, 255, 255, 0.4),
+        rgba(255, 255, 255, 0.4) 10px,
+        transparent 10px,
+        transparent 20px
+    ) !important;
+    
+    /* Ensure the color beneath shows through */
+    background-blend-mode: overlay;
+    
+    /* Strong dashed border */
+    border: 2px dashed rgba(0,0,0,0.6) !important;
+}
+
+.app-layout {
+    display: flex;
+    flex-direction: row;
+    height: calc(100vh - 100px); /* Fill remaining usage */
+    border-top: 1px solid #ccc;
+}
+
+button {
+    cursor: pointer;
+    border: 1px solid #ccc;
+    background: #fff;
+    border-radius: 4px;
+}
+
+.header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 20px;
+}
+
+.header-controls {
+    display: flex;
+    gap: 10px;
+}
+
+header {
+    background: var(--gray);
+    padding: 10px 0;
+    border-bottom: 1px solid #ddd;
+}
+
+header h1 {
+    margin: 0;
+    font-size: 1.5rem;
+}
+
+header p {
+    margin: 5px 20px 0;
+    color: #666;
+    font-size: 0.9rem;
+}
+
+.stats {
+    padding: 5px 20px; 
+    font-family: 'Consolas', monospace; 
+    font-size: 0.9rem; 
+    color: #444;
+}
+
+/* Sidebar */
+.sidebar {
+    width: 300px;
+    background: #f9fafb;
+    border-left: 1px solid #ddd;
+    display: flex;
+    flex-direction: column;
+    padding: 20px;
+    overflow-y: auto;
+    flex-shrink: 0;
+}
+
+.sidebar-section {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 15px;
+    margin-bottom: 20px;
+}
+
+/* Main Content Area */
+.main-content {
+    flex: 1;
+    position: relative;
+    overflow: hidden; /* Hide scrollbars of the container */
+    display: flex;
+    flex-direction: column;
+}
+
+.axis-header {
+    height: 30px;
+    background: #f0f0f0;
+    border-bottom: 1px solid #ccc;
+    position: relative;
+    overflow: hidden; /* Hide scrollbars */
+    flex-shrink: 0;
+}
+
+.axis-content {
+    display: flex;
+    height: 100%;
+}
+
+.axis-cell {
+    width: 50px; /* CELL_SIZE */
+    height: 100%;
+    border-right: 1px solid #ddd;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    color: #666;
+    background: #fafafa;
+    flex-shrink: 0;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+/* Board */
+.board-container {
+    position: relative;
+    overflow: auto; /* Allow scrolling */
+    flex: 1;
+    background-color: #fff;
+    width: 100%;
+}
+
+.board-content {
+    position: relative;
+    background-color: #fff;
+}
+
+.grid-background {
+    width: 100%;
+    height: 100%;
+    background-image: 
+        linear-gradient(to right, #ccc 1px, transparent 1px),
+        linear-gradient(to bottom, #ccc 1px, transparent 1px);
+    background-size: 50px 50px;
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 0;
+}
+
+.draggable-item {
+    position: absolute;
+    box-sizing: border-box;
+    border: 1px solid rgba(0,0,0,0.2);
+    border-radius: 4px;
+    cursor: move;
+    font-size: 0.85rem;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 0 5px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    user-select: none;
+    transition: transform 0.1s;
+}
+
+.draggable-item.selected {
+    box-shadow: 0 0 0 2px #2563eb, 0 4px 6px rgba(0,0,0,0.2);
+    z-index: 10;
+}
+
+.ghost-item {
+    position: absolute;
+    box-sizing: border-box;
+    border: 2px dashed #999;
+    border-radius: 4px;
+    pointer-events: none;
+    z-index: 5;
+    opacity: 0.6;
+}
+
+/* Forms */
+.form-group {
+    margin-bottom: 15px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 500;
+}
+
+.form-group input {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+
+.color-options {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
+.color-swatch {
+    width: 25px;
+    height: 25px;
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2px solid transparent;
+}
+
+.color-swatch.active {
+    border-color: #333;
+}
+
+.btn {
+    display: block;
+    width: 100%;
+    padding: 10px;
+    background: var(--primary);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    text-align: center;
+    font-weight: 500;
+}
+
+.btn:hover {
+    opacity: 0.9;
+}
+
+.btn-primary {
+    background: var(--primary);
+    color: white;
+    border: none;
+    padding: 5px 15px;
+    border-radius: 4px;
+    font-weight: 500;
+}
+
+.btn-secondary {
+    background: #fff;
+    color: #374151;
+    border: 1px solid #d1d5db;
+    padding: 5px 15px;
+    border-radius: 4px;
+    font-weight: 500;
+}
+
+.btn-small {
+    padding: 4px 10px;
+    font-size: 0.8rem;
+}
+
+.btn-group {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+}
+</style>

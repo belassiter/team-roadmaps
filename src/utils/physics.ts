@@ -90,3 +90,90 @@ export const findClosestValidPosition = (
     }
     return { x: 0, y: 0 }; // Fallback for new items
 };
+
+/**
+ * Resolves bumps by propagating collisions.
+ * Returns a list of all items (cloned) with their new resolved positions.
+ * The candidate item is included in the return list at its fixed position.
+ */
+export const resolveBumps = (
+    candidate: PhysicsItem,
+    allItems: PhysicsItem[],
+    cellSize: number
+): PhysicsItem[] => {
+    // 1. Create a working set of items (clones)
+    // Map ID -> Item
+    const currentItems = new Map<number | string, PhysicsItem>();
+    
+    allItems.forEach(item => {
+        if (item.id === candidate.id) return; // Skip the candidate in the initial load, we add it explicitly
+        // Clone to avoid mutating original
+        currentItems.set(item.id, { ...item });
+    });
+
+    // Add candidate (Source of Truth)
+    currentItems.set(candidate.id, { ...candidate });
+
+    // 2. Queue for propagation
+    // We only process items that have moved or are the source
+    const queue: PhysicsItem[] = [candidate];
+    
+    let iterations = 0;
+    const MAX_ITERATIONS = 500; // Safety break
+
+    while (queue.length > 0 && iterations < MAX_ITERATIONS) {
+        iterations++;
+        const bumper = queue.shift()!;
+        
+        // Find overlaps with this bumper
+        for (const [id, connection] of currentItems) {
+            if (id === bumper.id) continue;
+            
+            // Overlap Check (using checkCollision logic inline or tool)
+            // checkCollision expects a list, let's just do single AABB check here for speed
+            const bumperRight = bumper.x + (bumper.widthUnits * cellSize);
+            const bumperBottom = bumper.y + cellSize;
+            
+            const connRight = connection.x + (connection.widthUnits * cellSize);
+            const connBottom = connection.y + cellSize;
+
+            const overlapX = (bumper.x < connRight) && (bumperRight > connection.x);
+            const overlapY = (bumper.y < connBottom) && (bumperBottom > connection.y);
+
+            if (overlapX && overlapY) {
+                // COLLISION DETECTED
+                
+                // Which way to push?
+                const bumperCenter = bumper.x + (bumper.widthUnits * cellSize) / 2;
+                const connectionCenter = connection.x + (connection.widthUnits * cellSize) / 2;
+
+                let newX = connection.x;
+                
+                // If bumper is to the left, push connection RIGHT
+                if (bumperCenter < connectionCenter) {
+                    newX = bumperRight;
+                } else {
+                    // Push LEFT
+                    newX = bumper.x - (connection.widthUnits * cellSize);
+                }
+
+                // Snap to cell size (optional, but good for alignment)
+                // Assuming everything is already snapped, newX should be snapped if widths are integer units
+                // But let's enforce it to be safe? 
+                // No, bumper.x might be drag-offset? No, candidate passed in is usually snapped.
+                
+                // Clamp to 0
+                if (newX < 0) newX = 0;
+
+                // Did it move?
+                if (newX !== connection.x) {
+                    connection.x = newX;
+                    // It moved, so it is now a bumper
+                    queue.push(connection);
+                }
+            }
+        }
+    }
+
+    return Array.from(currentItems.values());
+};
