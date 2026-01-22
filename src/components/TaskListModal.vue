@@ -23,8 +23,8 @@ interface AxisConfig {
 
 const props = withDefaults(defineProps<{
     isOpen: boolean;
-    items: TaskItem[];
-    axisConfig: AxisConfig;
+    items?: TaskItem[];
+    axisConfig?: AxisConfig;
     cellSize?: number;
 }>(), {
     cellSize: 50,
@@ -33,7 +33,7 @@ const props = withDefaults(defineProps<{
 });
 
 const emit = defineEmits<{
-    (e: 'close'): void
+    close: []
 }>();
 
 const searchQuery = ref('');

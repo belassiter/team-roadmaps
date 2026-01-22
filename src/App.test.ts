@@ -92,4 +92,49 @@ describe('App.vue', () => {
         
         wrapper.unmount();
     });
+
+    it('should delete a selected item when Delete Work Item button is clicked', async () => {
+        const wrapper = mount(App);
+        
+        // Add item to ensure we have something to delete
+        const buttons = wrapper.findAll('button');
+        const addButton = buttons.find(b => b.text() === 'Add Work Item');
+        await addButton?.trigger('click');
+        
+        const countBefore = wrapper.findAll('.draggable-item').length;
+        
+        // Find and click delete button
+        // Need to update button finding properly as the DOM changed
+       const deleteButton = wrapper.findAll('button').find(b => b.text() === 'Delete Selected Item(s)');
+       expect(deleteButton?.exists()).toBe(true);
+       
+       await deleteButton?.trigger('click');
+       
+       const countAfter = wrapper.findAll('.draggable-item').length;
+       expect(countAfter).toBe(countBefore - 1);
+    });
+
+    it('should delete an item via Delete key and support Undo', async () => {
+        const wrapper = mount(App, { attachTo: document.body });
+        
+        // Add item
+        const buttons = wrapper.findAll('button');
+        const addButton = buttons.find(b => b.text() === 'Add Work Item');
+        await addButton?.trigger('click');
+        
+        const countBefore = wrapper.findAll('.draggable-item').length;
+        
+        // Trigger Delete Key
+        await wrapper.trigger('keydown', { key: 'Delete' });
+        
+        const countAfter = wrapper.findAll('.draggable-item').length;
+        expect(countAfter).toBe(countBefore - 1);
+
+        // Undo
+        await wrapper.trigger('keydown', { key: 'z', ctrlKey: true });
+        expect(wrapper.findAll('.draggable-item').length).toBe(countBefore);
+
+        wrapper.unmount();
+    });
+
 });

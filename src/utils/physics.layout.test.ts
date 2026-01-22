@@ -27,9 +27,7 @@ describe('calculateLayoutOutcome', () => {
         // With Backfill ON.
         
         const result = calculateLayoutOutcome(
-            2, // Dragging B
-            4 * CELL_SIZE, // Target X
-            0,             // Target Y
+            [{ id: 2, targetX: 4 * CELL_SIZE, targetY: 0 }], // Dragging B to X=4
             allItems,
             CELL_SIZE,
             {
@@ -83,9 +81,7 @@ describe('calculateLayoutOutcome', () => {
         // Let's see.
 
         const result = calculateLayoutOutcome(
-            2, // Dragging B
-            0, // Target X (A's spot)
-            0, // Target Y
+            [{ id: 2, targetX: 0, targetY: 0 }], // Dragging B to A's spot
             allItems,
             CELL_SIZE,
             {

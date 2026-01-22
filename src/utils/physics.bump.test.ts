@@ -13,7 +13,7 @@ describe('resolveBumps', () => {
         ];
         const candidate: PhysicsItem = { id: 1, x: 50, y: 0, widthUnits: 2 };
         
-        const result = resolveBumps(candidate, items, CELL_SIZE);
+        const result = resolveBumps([candidate], items, CELL_SIZE);
         
         const resCandidate = result.find(i => i.id === 1);
         const resItem2 = result.find(i => i.id === 2);
@@ -38,7 +38,7 @@ describe('resolveBumps', () => {
         const candidate: PhysicsItem = { id: 1, x: 80, y: 0, widthUnits: 2 }; 
         // candidate ends at 180. overlap with 2 (starts 100).
         
-        const result = resolveBumps(candidate, items, CELL_SIZE);
+        const result = resolveBumps([candidate], items, CELL_SIZE);
         
         const resItem2 = result.find(i => i.id === 2);
         
@@ -62,7 +62,7 @@ describe('resolveBumps', () => {
         // 2 New Right Edge = 250. Overlaps 3 (start 200).
         // 3 New X = 250.
         
-        const result = resolveBumps(candidate, items, CELL_SIZE);
+        const result = resolveBumps([candidate], items, CELL_SIZE);
         
         expect(result.find(i => i.id === 2)?.x).toBe(150);
         expect(result.find(i => i.id === 3)?.x).toBe(250);
@@ -76,7 +76,7 @@ describe('resolveBumps', () => {
         
         const candidate: PhysicsItem = { id: 1, x: 80, y: 0, widthUnits: 2 }; 
         
-        const result = resolveBumps(candidate, items, CELL_SIZE);
+        const result = resolveBumps([candidate], items, CELL_SIZE);
         expect(result.find(i => i.id === 2)?.x).toBe(100); // Unchanged
     });
 });

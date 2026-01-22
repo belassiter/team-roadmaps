@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
 import { formatDate, parseLocalYMD } from './utils/dates';
-import { checkCollision, findClosestValidPosition, resolveBumps, resolveBackfill, calculateLayoutOutcome, type PhysicsItem } from './utils/physics';
+import { checkCollision, resolveBackfill, calculateLayoutOutcome, type PhysicsItem } from './utils/physics';
 import { generateColorPalette } from './utils/colors'; 
 import TaskListModal from './components/TaskListModal.vue';
 
@@ -128,12 +128,13 @@ const isBumpMode = ref(false);
 const isBackfillMode = ref(false);
 const bumpGhosts = ref<PhysicsItem[]>([]); 
 const backfillGhosts = ref<PhysicsItem[]>([]); 
+const draggedGhosts = ref<PhysicsItem[]>([]);
 
 const startX = ref(0);
 const startY = ref(0);
 
 const draggingItemIndex = ref<number | null>(null);
-const selectedItemId = ref<number | string | null>(1);
+const selectedItemIds = ref<Set<string | number>>(new Set([1]));
 
 const items = reactive<TaskItem[]>([
     {
@@ -151,7 +152,11 @@ const dragOffset = ref({ x: 0, y: 0 });
 // --- Computed ---
 
 const selectedItem = computed(() => {
-    return items.find(item => item.id === selectedItemId.value);
+    if (selectedItemIds.value.size === 1) {
+        const id = Array.from(selectedItemIds.value)[0];
+        return items.find(item => item.id === id);
+    }
+    return null;
 });
 
 const activeItem = computed(() => {
@@ -212,12 +217,12 @@ const bumpedItemIds = computed(() => {
     // Backfill Mode logic
     if (isBackfillMode.value && backfillGhosts.value.length > 0) {
         backfillGhosts.value.forEach(g => {
-             // For backfill, we definitely hide the item at its old position so we can show the ghost at the new one
-             // (Unless it's the dragged item itself, which is handled separately)
-             if (draggingItemIndex.value !== null && items[draggingItemIndex.value].id === g.id) {
+            // For backfill, we definitely hide the item at its old position so we can show the ghost at the new one
+            // (Unless it's the dragged item itself, which is handled separately)
+            if (draggingItemIndex.value !== null && items[draggingItemIndex.value].id === g.id) {
                 return;
             }
-             ids.add(g.id);
+            ids.add(g.id);
         });
     }
 
@@ -237,7 +242,7 @@ const undo = () => {
     const previousState = history.value.pop();
     if (previousState) {
         items.splice(0, items.length, ...previousState);
-        selectedItemId.value = null;
+        selectedItemIds.value.clear();
     }
 };
 
@@ -298,15 +303,77 @@ const addItem = () => {
     };
     
     items.push(newItem);
-    selectedItemId.value = newId;
+    selectedItemIds.value.clear();
+    selectedItemIds.value.add(newId);
+};
+
+const deleteItem = () => {
+    if (selectedItemIds.value.size === 0) return;
+
+    saveHistory();
+
+    const idsToDelete = Array.from(selectedItemIds.value);
+    
+    // Sort items by X descending to process right-most first for backfill safety
+    const itemsToDelete = items
+        .filter(i => idsToDelete.includes(i.id))
+        .sort((a, b) => b.x - a.x);
+
+    // Remove them
+    for (const item of itemsToDelete) {
+        const index = items.indexOf(item);
+        if (index !== -1) items.splice(index, 1);
+    }
+
+    selectedItemIds.value.clear();
+
+    if (isBackfillMode.value) {
+        // Iterate originals to trigger backfill
+        itemsToDelete.forEach(original => {
+            const backfilled = resolveBackfill(
+                original.x,
+                original.y,
+                original.widthUnits,
+                items, 
+                CELL_SIZE
+            );
+            
+            // Sync results
+            backfilled.forEach(b => {
+                const realItem = items.find(i => i.id === b.id);
+                if (realItem) {
+                    realItem.x = b.x;
+                    realItem.y = b.y;
+                }
+            });
+        });
+    }
 };
 
 const startDrag = (event: MouseEvent, index: number) => {
     if (draggingItemIndex.value !== null) return; 
 
+    const item = items[index];
+    const isSelected = selectedItemIds.value.has(item.id);
+
+    if (event.ctrlKey || event.metaKey) {
+        if (isSelected) {
+            selectedItemIds.value.delete(item.id);
+            return;
+        } else {
+            selectedItemIds.value.add(item.id);
+        }
+    } else {
+        if (!isSelected) {
+            selectedItemIds.value.clear();
+            selectedItemIds.value.add(item.id);
+        }
+    }
+
+    // Only drag if selected
+    if (!selectedItemIds.value.has(item.id)) return;
+
     draggingItemIndex.value = index;
-    selectedItemId.value = items[index].id; 
-    
     isDragging.value = true;
     startX.value = event.clientX;
     startY.value = event.clientY;
@@ -333,36 +400,60 @@ const toggleBumpMode = () => {
 };
 
 const updateGhost = () => {
-    backfillGhosts.value = []; 
-    // We will use bumpGhosts as the unified list of "Simulated World Items" 
-    // whether they are bumped, backfilled, or stationary.
+    // We will use bumpGhosts/backfillGhosts as the "Simulated World Items"
+    draggedGhosts.value = []; 
 
     const index = draggingItemIndex.value;
     if (index === null) return;
     
-    const item = items[index];
-
-    let finalRawX = item.x + dragOffset.value.x;
-    let finalRawY = item.y + dragOffset.value.y;
-
-    let snappedPosX = Math.round(finalRawX / CELL_SIZE) * CELL_SIZE;
-    let snappedPosY = Math.round(finalRawY / CELL_SIZE) * CELL_SIZE;
-
-    snappedPosX = Math.max(0, snappedPosX);
-    snappedPosY = Math.max(0, snappedPosY);
+    // Anchor Item (The one we clicked)
+    const anchorItem = items[index];
     
-    // In Bump Mode, we allow unlimited expansion to the right
+    // All Selected Items (including anchor)
+    const draggedIds = Array.from(selectedItemIds.value);
+    
+    // Prepare arguments for layout calculation
+    const draggedItemsArgs: { id: string | number, targetX: number, targetY: number }[] = [];
+    
+    // Calculate Anchor New Position
+    let anchorRawX = anchorItem.x + dragOffset.value.x;
+    let anchorRawY = anchorItem.y + dragOffset.value.y;
+    let anchorSnappedX = Math.round(anchorRawX / CELL_SIZE) * CELL_SIZE;
+    let anchorSnappedY = Math.round(anchorRawY / CELL_SIZE) * CELL_SIZE;
+    
+    anchorSnappedX = Math.max(0, anchorSnappedX);
+    anchorSnappedY = Math.max(0, anchorSnappedY);
+    
+    // Constrain Anchor (assuming group follows)
+    // Note: We might want to constrain the whole group, but constraining anchor is a good start.
+    // If not Bump Mode, constrain to grid
     if (!isBumpMode.value) {
-        const itemPxWidth = item.widthUnits * CELL_SIZE;
-        snappedPosX = Math.min(snappedPosX, gridWidth.value - itemPxWidth);
+        // We should check the RIGHTMOST edge of the group relative to the anchor
+        // For now, simple anchor constraint + grid expansion checks
+        const itemPxWidth = anchorItem.widthUnits * CELL_SIZE;
+        anchorSnappedX = Math.min(anchorSnappedX, gridWidth.value - itemPxWidth);
     }
-    snappedPosY = Math.min(snappedPosY, gridHeight.value - CELL_SIZE);
+    anchorSnappedY = Math.min(anchorSnappedY, gridHeight.value - CELL_SIZE);
+    
+    // Delta for the group
+    const dx = anchorSnappedX - anchorItem.x;
+    const dy = anchorSnappedY - anchorItem.y;
+    
+    // Build args for all selected items
+    draggedIds.forEach(id => {
+        const item = items.find(i => i.id === id);
+        if (item) {
+            draggedItemsArgs.push({
+                id: item.id,
+                targetX: item.x + dx,
+                targetY: item.y + dy
+            });
+        }
+    });
 
     // --- Unified Layout Calculation ---
     const outcome = calculateLayoutOutcome(
-        item.id,
-        snappedPosX,
-        snappedPosY,
+        draggedItemsArgs,
         items,
         CELL_SIZE,
         {
@@ -373,25 +464,29 @@ const updateGhost = () => {
         }
     );
 
-    // 1. Update the Main Ghost (The Dragged Item)
-    const draggedGhost = outcome.draggedItem;
-    ghost.x = draggedGhost.x;
-    ghost.y = draggedGhost.y;
-    ghost.width = draggedGhost.widthUnits * CELL_SIZE;
-    ghost.height = CELL_SIZE;
-    ghost.color = item.color || '#ccc';
-    ghost.visible = true;
+    // 1. Update Dragged Ghosts
+    draggedGhosts.value = outcome.draggedItems;
 
-    // 2. Update the "Environmental" Ghosts (Bumps / Backfills)
-    // bumpedItemIds will automatically filter this list to show only changed items
+    // Update the single 'ghost' prop just in case something relies on it, 
+    // or we can deprecate it. Let's keep it sync with anchor for now to avoid breaking template yet.
+    const anchorGhost = outcome.draggedItems.find(i => i.id === anchorItem.id);
+    if (anchorGhost) {
+        ghost.x = anchorGhost.x;
+        ghost.y = anchorGhost.y;
+        ghost.width = anchorGhost.widthUnits * CELL_SIZE;
+        ghost.height = CELL_SIZE;
+        ghost.color = anchorItem.color || '#ccc';
+        ghost.visible = true;
+    }
+
+    // 2. Update Environmental Ghosts
     bumpGhosts.value = outcome.items;
+    backfillGhosts.value = outcome.items;
 
-    // Check grid expansion from the outcome
+    // Check grid expansion
     let maxRight = 0;
-    // Include the ghost itself
-    maxRight = Math.max(maxRight, ghost.x + ghost.width);
     
-    outcome.items.forEach(p => {
+    [...outcome.items, ...outcome.draggedItems].forEach(p => {
         const r = p.x + (p.widthUnits * CELL_SIZE);
         if (r > maxRight) maxRight = r;
     });
@@ -404,37 +499,38 @@ const updateGhost = () => {
 const stopDrag = () => {
     if (!isDragging.value) return;
     
-    // Recalculate everything one last time to ensure consistency with what was shown
-    // or just trust the ghosts?
-    // Safer to recalculate using the exact logic, as updateGhost depends on mousemove
-    
     const index = draggingItemIndex.value;
     if (index !== null) {
-        const item = items[index];
-
-        // We use the same 'snapped' logic as updateGhost to determine target
-        // (Copied logic to ensure match)
-        let finalRawX = item.x + dragOffset.value.x;
-        let finalRawY = item.y + dragOffset.value.y;
-        let snappedPosX = Math.round(finalRawX / CELL_SIZE) * CELL_SIZE;
-        let snappedPosY = Math.round(finalRawY / CELL_SIZE) * CELL_SIZE;
-        snappedPosX = Math.max(0, snappedPosX);
-        snappedPosY = Math.max(0, snappedPosY);
+        // Re-run logic to be safe (same as updateGhost)
+        const anchorItem = items[index];
+        const draggedIds = Array.from(selectedItemIds.value);
+         
+        // Re-calculating snap with constraints (simplified for brevity, should match updateGhost)
+        let anchorSnappedX = Math.round((anchorItem.x + dragOffset.value.x) / CELL_SIZE) * CELL_SIZE;
+        let anchorSnappedY = Math.round((anchorItem.y + dragOffset.value.y) / CELL_SIZE) * CELL_SIZE;
+        anchorSnappedX = Math.max(0, anchorSnappedX);
+        anchorSnappedY = Math.max(0, anchorSnappedY);
         if (!isBumpMode.value) {
-            const itemPxWidth = item.widthUnits * CELL_SIZE;
-            snappedPosX = Math.min(snappedPosX, gridWidth.value - itemPxWidth);
+            const itemPxWidth = anchorItem.widthUnits * CELL_SIZE;
+            anchorSnappedX = Math.min(anchorSnappedX, gridWidth.value - itemPxWidth);
         }
-        snappedPosY = Math.min(snappedPosY, gridHeight.value - CELL_SIZE);
+        anchorSnappedY = Math.min(anchorSnappedY, gridHeight.value - CELL_SIZE);
+         
+        const finalDx = anchorSnappedX - anchorItem.x;
+        const finalDy = anchorSnappedY - anchorItem.y;
 
-        // Check if we actually moved visuals? 
-        // Logic: if ghost is visible, we commit to GHOST position.
-        // But calculateLayoutOutcome returns the valid position.
-        
-        // Let's run the calc.
+        const draggedItemsArgs = draggedIds.map(id => {
+            const item = items.find(i => i.id === id);
+            if (!item) return null;
+            return {
+                id: item.id,
+                targetX: item.x + finalDx,
+                targetY: item.y + finalDy
+            };
+        }).filter(Boolean) as { id: string | number, targetX: number, targetY: number }[];
+
         const outcome = calculateLayoutOutcome(
-            item.id,
-            snappedPosX,
-            snappedPosY,
+            draggedItemsArgs,
             items,
             CELL_SIZE,
             {
@@ -446,38 +542,40 @@ const stopDrag = () => {
         );
 
         if (outcome.isValid) {
-            // Apply changes
-            // Detect if anything changed to save history
             let changed = false;
 
-            // 1. Dragged Item
-            if (item.x !== outcome.draggedItem.x || item.y !== outcome.draggedItem.y) {
-                changed = true;
-            }
-
-            // 2. Others (Bumps / Backfills)
-            outcome.items.forEach(newItemState => {
-                const realItem = items.find(i => i.id === newItemState.id);
-                if (realItem) {
-                    if (realItem.x !== newItemState.x || realItem.y !== newItemState.y) {
-                        changed = true;
-                    }
+            // Check dragged items
+            outcome.draggedItems.forEach(d => {
+                const original = items.find(i => i.id === d.id);
+                if (original && (original.x !== d.x || original.y !== d.y)) {
+                    changed = true;
+                }
+            });
+            
+            // Check bumped/backfilled items
+            outcome.items.forEach(d => {
+                const original = items.find(i => i.id === d.id);
+                if (original && (original.x !== d.x || original.y !== d.y)) {
+                    changed = true;
                 }
             });
 
             if (changed) {
                 saveHistory();
-                
-                // Commit Dragged Item
-                item.x = outcome.draggedItem.x;
-                item.y = outcome.draggedItem.y;
 
-                // Commit Others
-                outcome.items.forEach(newItemState => {
-                    const realItem = items.find(i => i.id === newItemState.id);
-                    if (realItem) {
-                        realItem.x = newItemState.x;
-                        realItem.y = newItemState.y;
+                outcome.draggedItems.forEach(d => {
+                    const original = items.find(i => i.id === d.id);
+                    if (original) {
+                        original.x = d.x;
+                        original.y = d.y;
+                    }
+                });
+
+                outcome.items.forEach(d => {
+                    const original = items.find(i => i.id === d.id);
+                    if (original) {
+                        original.x = d.x;
+                        original.y = d.y;
                     }
                 });
             }
@@ -488,6 +586,7 @@ const stopDrag = () => {
     draggingItemIndex.value = null;
     dragOffset.value = { x: 0, y: 0 };
     ghost.visible = false;
+    draggedGhosts.value = [];
     bumpGhosts.value = []; 
     backfillGhosts.value = [];
 
@@ -555,7 +654,7 @@ const handleFileUpload = (event: Event) => {
                     Object.assign(axisConfig, data.axisConfig);
                 }
                 
-                selectedItemId.value = null;
+                selectedItemIds.value.clear();
                 saveHistory(); 
             }
 
@@ -573,6 +672,16 @@ const handleKeydown = (e: KeyboardEvent) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
         e.preventDefault();
         undo();
+        return;
+    }
+
+    if ((e.key === 'Delete' || e.key === 'Backspace') && selectedItemIds.value.size > 0) {
+        // Avoid deleting if user is typing in an input
+        const target = e.target as HTMLElement;
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+        
+        e.preventDefault();
+        deleteItem();
     }
 };
 
@@ -682,7 +791,7 @@ onUnmounted(() => {
                 ref="boardContainer"
                 class="board-container"
                 @scroll="handleScroll"
-                @click.self="selectedItemId = null"
+                @click.self="selectedItemIds.clear()"
             >
                 <div
                     class="board-content"
@@ -692,21 +801,29 @@ onUnmounted(() => {
                     <!-- Clicking background deselects item -->
                     <div
                         class="grid-background"
-                        @click="selectedItemId = null"
+                        @click="selectedItemIds.clear()"
                     />
 
-                    <!-- The Ghost Item -->
+                    <!-- The Ghost Items (Multi-Drag) -->
                     <div 
-                        v-if="isDragging && ghost.visible"
-                        class="ghost-item"
-                        :style="{
-                            transform: `translate(${ghost.x}px, ${ghost.y}px)`,
-                            width: `${ghost.width}px`,
-                            height: `${ghost.height}px`,
-                            borderColor: ghost.color,
-                            backgroundColor: ghost.color
-                        }"
-                    />
+                        v-if="isDragging && draggedGhosts.length > 0"
+                    >
+                        <template
+                            v-for="g in draggedGhosts"
+                            :key="'drag-ghost-' + g.id"
+                        >
+                            <div 
+                                class="ghost-item"
+                                :style="{
+                                    transform: `translate(${g.x}px, ${g.y}px)`,
+                                    width: `${g.widthUnits * CELL_SIZE}px`,
+                                    height: `${CELL_SIZE}px`,
+                                    borderColor: g.color || '#ccc',
+                                    backgroundColor: g.color || '#ccc'
+                                }"
+                            />
+                        </template>
+                    </div>
 
                     <!-- The Bump Mode Ghosts -->
                     <div 
@@ -736,7 +853,7 @@ onUnmounted(() => {
                     </div>
 
                     <!-- The Backfill Mode Ghosts -->
-                     <div 
+                    <div 
                         v-if="isBackfillMode && backfillGhosts.length > 0"
                     >
                         <template
@@ -765,7 +882,7 @@ onUnmounted(() => {
                         v-show="!bumpedItemIds.has(item.id)"
                         :key="item.id"
                         class="draggable-item"
-                        :class="{ selected: selectedItemId === item.id }"
+                        :class="{ selected: selectedItemIds.has(item.id) }"
                         :style="getItemStyle(item, index)"
                         @mousedown.stop="startDrag($event, index)"
                     >
@@ -890,12 +1007,22 @@ onUnmounted(() => {
 
             <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
 
-            <button
-                class="btn"
-                @click="addItem"
-            >
-                Add Work Item
-            </button>
+            <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+                <button
+                    class="btn"
+                    @click="addItem"
+                >
+                    Add Work Item
+                </button>
+                <button
+                    v-if="selectedItemIds.size > 0"
+                    class="btn"
+                    style="background-color: #ef4444; color: white; border: none;"
+                    @click="deleteItem"
+                >
+                    Delete Selected Item(s)
+                </button>
+            </div>
 
             <div v-if="selectedItem">
                 <h2>Edit Work Item</h2>

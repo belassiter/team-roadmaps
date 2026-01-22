@@ -1,5 +1,13 @@
 # Copilot Journal
 
+<!-- 
+PROTOCOL: 
+1. Edit Code
+2. npm run verify
+3. Login entry below
+4. Report to user
+-->
+
 This file tracks the evolution of the project. Copilot should update this file after completing significant tasks.
 
 ## Format
@@ -9,6 +17,31 @@ This file tracks the evolution of the project. Copilot should update this file a
 * **Outcome**: [Result and verification status]
 
 ---
+
+## 2026-01-22 11:55
+* **Goal**: Enforce quality assurance protocols (Definition of done).
+* **Files Modified**: `.github/copilot-instructions.md`, `package.json`, `copilot_journal.md`
+* **Approach**: 
+    * Created `.github/copilot-instructions.md` with strict rules for testing, linting, and building before completion.
+    * Added `npm run verify` script to `package.json` combining `lint`, `test`, and `build`.
+    * Updated `copilot_journal.md` with the new protocol header.
+* **Outcome**: 
+    * `npm run verify` passed.
+    * Automation now assists in enforcing the QA cycle.
+
+## 2026-01-22 11:45
+* **Goal**: QA and Bugfixes (Delete key, JSON loading, Backfill ghosts, Backfill return logic).
+* **Files Modified**: `src/utils/physics.ts`, `src/App.vue`, `src/components/TaskListModal.vue`
+* **Approach**: 
+    * **Backfill Return**: Updated `physics.ts` to ignore backfill triggers if the dragged item overlaps its original position.
+    * **Delete Key**: Fixed `App.vue` to use `selectedItemIds`.
+    * **JSON Load**: Cleared `selectedItemIds` on load to prevent crash.
+    * **Ghosts**: Decoupled ghost rendering from Bump mode in `App.vue`.
+    * **QA**: Added `src/App.loading.test.ts`, `src/App.ghosts.test.ts`, `src/utils/physics.backfill_return.test.ts`. 
+    * **Cleanup**: Fixed lint errors in `App.vue` (indentation) and `physics.ts` (dead code).
+* **Outcome**: 
+    * Regression tests passed.
+    * `npm run verify` passed (Lint: Clean, Tests: 44/44, Build: Success).
 
 ## 2026-01-22 10:00
 * **Goal**: Fix Backfill & Bump Interaction and Visualization (Unified Physics).

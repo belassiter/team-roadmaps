@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "verify": "npm run lint && npm test && npm run build"
   },
   "dependencies": {
     "uuid": "^13.0.0",

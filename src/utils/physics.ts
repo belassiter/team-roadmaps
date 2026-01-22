@@ -92,34 +92,33 @@ export const findClosestValidPosition = (
 };
 
 /**
- * Resolves bumps by propagating collisions.
- * Returns a list of all items (cloned) with their new resolved positions.
- * The candidate item is included in the return list at its fixed position.
+ * Resolves bumps by propagating collisions for multiple candidates.
  */
 export const resolveBumps = (
-    candidate: PhysicsItem,
+    candidates: PhysicsItem[], 
     allItems: PhysicsItem[],
     cellSize: number
 ): PhysicsItem[] => {
-    // 1. Create a working set of items (clones)
-    // Map ID -> Item
+    // 1. Create a working set
     const currentItems = new Map<number | string, PhysicsItem>();
     
+    // Load existing items, excluding candidates (to avoid duplication if they are in allItems)
+    const candidateIds = new Set(candidates.map(c => c.id));
     allItems.forEach(item => {
-        if (item.id === candidate.id) return; // Skip the candidate in the initial load, we add it explicitly
-        // Clone to avoid mutating original
+        if (candidateIds.has(item.id)) return; 
         currentItems.set(item.id, { ...item });
     });
 
-    // Add candidate (Source of Truth)
-    currentItems.set(candidate.id, { ...candidate });
+    // Add candidates (Source of Truth)
+    candidates.forEach(c => {
+        currentItems.set(c.id, { ...c });
+    });
 
     // 2. Queue for propagation
-    // We only process items that have moved or are the source
-    const queue: PhysicsItem[] = [candidate];
+    const queue: PhysicsItem[] = [...candidates];
     
     let iterations = 0;
-    const MAX_ITERATIONS = 500; // Safety break
+    const MAX_ITERATIONS = 1000; 
 
     while (queue.length > 0 && iterations < MAX_ITERATIONS) {
         iterations++;
@@ -129,8 +128,6 @@ export const resolveBumps = (
         for (const [id, connection] of currentItems) {
             if (id === bumper.id) continue;
             
-            // Overlap Check (using checkCollision logic inline or tool)
-            // checkCollision expects a list, let's just do single AABB check here for speed
             const bumperRight = bumper.x + (bumper.widthUnits * cellSize);
             const bumperBottom = bumper.y + cellSize;
             
@@ -141,34 +138,22 @@ export const resolveBumps = (
             const overlapY = (bumper.y < connBottom) && (bumperBottom > connection.y);
 
             if (overlapX && overlapY) {
-                // COLLISION DETECTED
-                
-                // Which way to push?
+                // COLLISION
                 const bumperCenter = bumper.x + (bumper.widthUnits * cellSize) / 2;
                 const connectionCenter = connection.x + (connection.widthUnits * cellSize) / 2;
 
                 let newX = connection.x;
                 
-                // If bumper is to the left, push connection RIGHT
                 if (bumperCenter <= connectionCenter) {
                     newX = bumperRight;
                 } else {
-                    // Push LEFT
                     newX = bumper.x - (connection.widthUnits * cellSize);
                 }
 
-                // Snap to cell size (optional, but good for alignment)
-                // Assuming everything is already snapped, newX should be snapped if widths are integer units
-                // But let's enforce it to be safe? 
-                // No, bumper.x might be drag-offset? No, candidate passed in is usually snapped.
-                
-                // Clamp to 0
                 if (newX < 0) newX = 0;
 
-                // Did it move?
                 if (newX !== connection.x) {
                     connection.x = newX;
-                    // It moved, so it is now a bumper
                     queue.push(connection);
                 }
             }
@@ -226,13 +211,11 @@ export const resolveBackfill = (
 export interface LayoutOutcome {
     items: PhysicsItem[];
     isValid: boolean;
-    draggedItem: PhysicsItem;
+    draggedItems: PhysicsItem[]; 
 }
 
 export const calculateLayoutOutcome = (
-    draggedItemId: number | string,
-    targetX: number,
-    targetY: number,
+    draggedItemsArgs: { id: string | number, targetX: number, targetY: number }[],
     allItems: PhysicsItem[],
     cellSize: number,
     options: {
@@ -242,91 +225,150 @@ export const calculateLayoutOutcome = (
         gridHeight: number;
     }
 ): LayoutOutcome => {
-    // 1. Identify Dragged Item & Original Position
-    const originalDraggedItem = allItems.find(i => i.id === draggedItemId);
-    // If not found, return original state
-    if (!originalDraggedItem) {
-        return { items: allItems.map(i => ({...i})), isValid: false, draggedItem: { id: -1, x:0, y:0, widthUnits:0 } };
+    // 1. Identify Dragged Items & Original Positions
+    const outputDraggedItems: PhysicsItem[] = [];
+    const draggedIds = new Set<string | number>();
+    const originalPositions: { x: number, y: number, widthUnits: number }[] = [];
+
+    draggedItemsArgs.forEach(arg => {
+        const original = allItems.find(i => i.id === arg.id);
+        if (original) {
+            draggedIds.add(arg.id);
+            originalPositions.push({ x: original.x, y: original.y, widthUnits: original.widthUnits });
+            outputDraggedItems.push({
+                ...original,
+                x: arg.targetX,
+                y: arg.targetY
+            });
+        }
+    });
+
+    if (outputDraggedItems.length === 0) {
+        return { items: allItems.map(i => ({...i})), isValid: false, draggedItems: [] };
     }
 
-    // 2. Build the "World" without the dragged item (Candidates for backfill/collision)
-    // clone all except dragged
+    // 2. Build World (excluding dragged)
     let worldState = allItems
-        .filter(i => i.id !== draggedItemId)
+        .filter(i => !draggedIds.has(i.id))
         .map(i => ({ ...i }));
 
-    // 3. Apply BACKFILL to the world state first
+    // 3. Backfill
     if (options.isBackfillMode) {
-        // The gap was created at originalDraggedItem.x/y
-        worldState = resolveBackfill(
-            originalDraggedItem.x,
-            originalDraggedItem.y,
-            originalDraggedItem.widthUnits,
-            worldState,
-            cellSize
-        );
+        // Re-implementing step 1/3 to be more robust
+        const activeOrigins: { x: number, y: number, widthUnits: number }[] = [];
+        
+        draggedItemsArgs.forEach(arg => {
+             const original = allItems.find(i => i.id === arg.id);
+             if (original) {
+                 const originX = original.x;
+                 const originY = original.y;
+                 const widthPx = original.widthUnits * cellSize;
+                 
+                 // Check Overlap
+                 const targetRight = arg.targetX + widthPx;
+                 const originRight = originX + widthPx;
+                 const targetBottom = arg.targetY + cellSize;
+                 const originBottom = originY + cellSize;
+
+                 const overlapX = (arg.targetX < originRight) && (targetRight > originX);
+                 const overlapY = (arg.targetY < originBottom) && (targetBottom > originY);
+                 
+                 if (!(overlapX && overlapY)) {
+                     activeOrigins.push({ x: originX, y: originY, widthUnits: original.widthUnits });
+                 }
+             }
+        });
+
+        const sortedOrigins = activeOrigins.sort((a, b) => b.x - a.x);
+        
+        sortedOrigins.forEach(origin => {
+            worldState = resolveBackfill(origin.x, origin.y, origin.widthUnits, worldState, cellSize);
+        });
     }
 
-    // 4. Position the Dragged Item at the Target (Candidate)
-    const candidateArg = {
-        id: originalDraggedItem.id,
-        x: targetX,
-        y: targetY,
-        widthUnits: originalDraggedItem.widthUnits,
-        // copy extra props if any
-        name: originalDraggedItem.name,
-        color: originalDraggedItem.color
-    };
-
     let finalizedItems: PhysicsItem[] = [];
-    let isValid = true;
 
-    // 5. Apply BUMP or Collision Check
+    // 4. Bump or Collision
     if (options.isBumpMode) {
-        // Resolve Bumps interacts the candidate against the (possibly backfilled) world
-        // resolveBumps returns the full list including candidate
-        // Note: resolveBumps signature: (candidate, existingItems, cellSize)
-        // ensure existingItems doesn't contain candidate (it doesn't, we filtered it)
-        finalizedItems = resolveBumps(candidateArg, worldState, cellSize);
+        finalizedItems = resolveBumps(outputDraggedItems, worldState, cellSize);
     } else {
-        // Standard Check
-        if (checkCollision(candidateArg, worldState, cellSize)) {
-            // Collision!
-            // Try to find closest valid? 
-            // In the "ghosting" UI we usually snap to closest valid.
-            // But here "calculateLayoutOutcome" might just report validity.
-            // However, the test expects resolved positions.
-            // Let's use finding logic or mark as invalid?
+        // Standard Collision Check for Group
+        let collisionDetected = false;
+        for (const cand of outputDraggedItems) {
+            if (checkCollision(cand, worldState, cellSize)) {
+                collisionDetected = true;
+                break;
+            }
+        }
+
+        if (collisionDetected) {
+            // Find valid position for the GROUP
+            const anchor = outputDraggedItems[0];
+            const anchorArg = draggedItemsArgs[0];
             
-            // To mimic App.vue's "ghost" behavior, we find closest valid position.
-            const validPos = findClosestValidPosition(
-                draggedItemId,
-                worldState,
-                targetX,
-                targetY,
-                originalDraggedItem.widthUnits,
-                cellSize,
-                options.gridWidth,
-                options.gridHeight
-            );
+            const others = outputDraggedItems.slice(1);
+            const relativeOffsets = others.map(o => ({
+                id: o.id,
+                dx: o.x - anchor.x,
+                dy: o.y - anchor.y
+            }));
+
+            const maxRadius = 10;
+            let found = false;
+             
+            const checkGroup = (ax: number, ay: number): boolean => {
+                const testAnchor = { ...anchor, x: ax, y: ay };
+                if (checkCollision(testAnchor, worldState, cellSize)) return false;
+                if (ax < 0 || ay < 0 || ax + anchor.widthUnits*cellSize > options.gridWidth || ay + cellSize > options.gridHeight) return false;
+
+                for (let i=0; i<others.length; i++) {
+                    const o = others[i];
+                    const off = relativeOffsets[i];
+                    const ox = ax + off.dx;
+                    const oy = ay + off.dy;
+                    const testOther = { ...o, x: ox, y: oy };
+                    if (checkCollision(testOther, worldState, cellSize)) return false;
+                    if (ox < 0 || oy < 0 || ox + o.widthUnits*cellSize > options.gridWidth || oy + cellSize > options.gridHeight) return false;
+                }
+                return true;
+            };
+
+            if (checkGroup(anchor.x, anchor.y)) {
+                found = true; 
+            } else {
+                for (let r = 1; r <= maxRadius; r++) {
+                    for (let dx = -r; dx <= r; dx++) {
+                        for (let dy = -r; dy <= r; dy++) {
+                             if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+                             const tx = anchorArg.targetX + (dx * cellSize);
+                             const ty = anchorArg.targetY + (dy * cellSize);
+                             if (checkGroup(tx, ty)) {
+                                 anchor.x = tx;
+                                 anchor.y = ty;
+                                 others.forEach((o, idx) => {
+                                     o.x = tx + relativeOffsets[idx].dx;
+                                     o.y = ty + relativeOffsets[idx].dy;
+                                 });
+                                 found = true;
+                                 break;
+                             }
+                        }
+                        if (found) break;
+                    }
+                    if (found) break;
+                }
+            }
             
-            candidateArg.x = validPos.x;
-            candidateArg.y = validPos.y;
-            
-            // We still need to reconstruct the full list
-            finalizedItems = [...worldState, candidateArg];
-            
-            // If the pos changed significantly from target, is it "valid"? 
-            // Usually yes, it's just snapped.
+            finalizedItems = [...worldState, ...outputDraggedItems];
         } else {
-            finalizedItems = [...worldState, candidateArg];
+            finalizedItems = [...worldState, ...outputDraggedItems];
         }
     }
 
     return {
         items: finalizedItems,
         isValid: true,
-        draggedItem: candidateArg // The final position of the dragged item
+        draggedItems: outputDraggedItems
     };
 };
 
